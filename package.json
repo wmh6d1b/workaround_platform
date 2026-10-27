@@ -9,7 +9,8 @@
     "preview": "node scripts/preview.mjs",
     "backend:dev": "cd backend && ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
     "backend:test": "cd backend && ../.venv/bin/python -m unittest discover -s tests -v",
-    "docs:api": ".venv/bin/python backend/scripts/export_openapi.py"
+    "docs:api": ".venv/bin/python backend/scripts/export_openapi.py",
+    "github:upload": "bash scripts/github-upload.sh"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
