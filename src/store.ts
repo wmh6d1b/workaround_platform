@@ -29,8 +29,8 @@ export const store = reactive({
 })
 
 const DEMO_PERMISSIONS: Record<string, string[]> = {
-  开发人员: ['home.view','wkd.view','wkd.create','wkd.edit','wkd.submit','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','stats.view','stats.export','files.upload','files.download'],
-  软件经理: ['home.view','wkd.view','wkd.edit','wkd.review','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','stats.view','stats.export','files.upload','files.download'],
+  开发人员: ['home.view','wkd.view','wkd.create','wkd.edit','wkd.submit','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','files.upload','files.download'],
+  软件经理: ['home.view','wkd.view','wkd.edit','wkd.review','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','files.upload','files.download'],
   项目管理员: ['*'],
   系统管理员: ['*'],
 }
@@ -71,7 +71,7 @@ export async function ensureOptions(force = false) {
     if (store.demoMode) {
       store.options = cloneDemoOptions()
     } else {
-      store.options = await api.get<BootstrapOptions>(`/bootstrap/options${queryString({ project_id: store.projectId })}`)
+      store.options = await api.get<BootstrapOptions>(`/bootstrap/options${queryString({ project_id: force ? store.projectId : undefined })}`)
     }
     const project = store.options.projects.find(item => item.id === store.projectId) || store.options.projects[0]
     if (project) {

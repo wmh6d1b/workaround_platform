@@ -231,7 +231,7 @@
     "/api/v1/dashboard/summary": {
       "get": {
         "tags": [
-          "首页、通知与数据统计"
+          "首页与通知"
         ],
         "summary": "首页指标、最近更新与待办数据",
         "operationId": "summary_api_v1_dashboard_summary_get",
@@ -283,7 +283,7 @@
     "/api/v1/notifications": {
       "get": {
         "tags": [
-          "首页、通知与数据统计"
+          "首页与通知"
         ],
         "summary": "查询当前用户通知",
         "operationId": "notifications_api_v1_notifications_get",
@@ -307,7 +307,7 @@
     "/api/v1/notifications/read": {
       "post": {
         "tags": [
-          "首页、通知与数据统计"
+          "首页与通知"
         ],
         "summary": "将全部通知标记为已读",
         "operationId": "read_notifications_api_v1_notifications_read_post",
@@ -328,12 +328,60 @@
         ]
       }
     },
+    "/api/v1/audit-logs": {
+      "get": {
+        "tags": [
+          "首页与通知"
+        ],
+        "summary": "查询全局重要操作审计日志（仅系统管理员）",
+        "operationId": "audit_logs_api_v1_audit_logs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/statistics/options": {
+      "get": {
+        "tags": [
+          "数据统计"
+        ],
+        "summary": "获取全部统计筛选项（所有已登录用户）",
+        "operationId": "statistics_options_api_v1_statistics_options_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/statistics": {
       "get": {
         "tags": [
-          "首页、通知与数据统计"
+          "数据统计"
         ],
-        "summary": "按项目、版本、机台、子系统和日期查询统计数据及流转趋势",
+        "summary": "项目内或全局多维统计（所有已登录用户，多选筛选、趋势与分布）",
         "operationId": "statistics_api_v1_statistics_get",
         "security": [
           {
@@ -342,67 +390,287 @@
         ],
         "parameters": [
           {
-            "name": "project_id",
+            "name": "scope",
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Project Id"
+              "type": "string",
+              "default": "project",
+              "title": "Scope"
             }
           },
           {
-            "name": "version_id",
+            "name": "project_ids",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Version Id"
+              "title": "Project Ids"
             }
           },
           {
-            "name": "machine_id",
+            "name": "version_ids",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Machine Id"
+              "title": "Version Ids"
             }
           },
           {
-            "name": "subsystem_id",
+            "name": "machine_ids",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Subsystem Id"
+              "title": "Machine Ids"
+            }
+          },
+          {
+            "name": "subsystem_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subsystem Ids"
+            }
+          },
+          {
+            "name": "found_version_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Found Version Ids"
+            }
+          },
+          {
+            "name": "planned_version_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Planned Version Ids"
+            }
+          },
+          {
+            "name": "statuses",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WkdStatus"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Statuses"
+            }
+          },
+          {
+            "name": "execution_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutionType"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Execution Types"
+            }
+          },
+          {
+            "name": "activity_scenes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Activity Scenes"
+            }
+          },
+          {
+            "name": "measure_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Measure Types"
+            }
+          },
+          {
+            "name": "owner_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner Ids"
+            }
+          },
+          {
+            "name": "handler_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Handler Ids"
+            }
+          },
+          {
+            "name": "stages",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Stage"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stages"
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Keyword"
+            }
+          },
+          {
+            "name": "date_field",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "created",
+              "title": "Date Field"
             }
           },
           {
@@ -463,9 +731,9 @@
     "/api/v1/statistics/export": {
       "get": {
         "tags": [
-          "首页、通知与数据统计"
+          "数据统计"
         ],
-        "summary": "鉴权并导出统计明细 CSV",
+        "summary": "按相同条件导出完整统计明细 CSV（所有已登录用户）",
         "operationId": "export_statistics_api_v1_statistics_export_get",
         "security": [
           {
@@ -474,67 +742,287 @@
         ],
         "parameters": [
           {
-            "name": "project_id",
+            "name": "scope",
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Project Id"
+              "type": "string",
+              "default": "project",
+              "title": "Scope"
             }
           },
           {
-            "name": "version_id",
+            "name": "project_ids",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Version Id"
+              "title": "Project Ids"
             }
           },
           {
-            "name": "machine_id",
+            "name": "version_ids",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Machine Id"
+              "title": "Version Ids"
             }
           },
           {
-            "name": "subsystem_id",
+            "name": "machine_ids",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "title": "Subsystem Id"
+              "title": "Machine Ids"
+            }
+          },
+          {
+            "name": "subsystem_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subsystem Ids"
+            }
+          },
+          {
+            "name": "found_version_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Found Version Ids"
+            }
+          },
+          {
+            "name": "planned_version_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Planned Version Ids"
+            }
+          },
+          {
+            "name": "statuses",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WkdStatus"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Statuses"
+            }
+          },
+          {
+            "name": "execution_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutionType"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Execution Types"
+            }
+          },
+          {
+            "name": "activity_scenes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Activity Scenes"
+            }
+          },
+          {
+            "name": "measure_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Measure Types"
+            }
+          },
+          {
+            "name": "owner_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner Ids"
+            }
+          },
+          {
+            "name": "handler_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Handler Ids"
+            }
+          },
+          {
+            "name": "stages",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Stage"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Stages"
+            }
+          },
+          {
+            "name": "keyword",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Keyword"
+            }
+          },
+          {
+            "name": "date_field",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "created",
+              "title": "Date Field"
             }
           },
           {
@@ -590,30 +1078,6 @@
             }
           }
         }
-      }
-    },
-    "/api/v1/audit-logs": {
-      "get": {
-        "tags": [
-          "首页、通知与数据统计"
-        ],
-        "summary": "查询重要操作审计日志",
-        "operationId": "audit_logs_api_v1_audit_logs_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
       }
     },
     "/api/v1/wkds": {
@@ -1563,7 +2027,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "获取可访问项目及版本、机台、子系统、责任人与角色选项",
+        "summary": "获取可访问项目及版本、机台、子系统、责任人与可分配角色选项",
         "operationId": "options_api_v1_bootstrap_options_get",
         "security": [
           {
@@ -1845,7 +2309,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "按姓名、用户名或工号查询平台用户",
+        "summary": "按姓名、用户名或工号搜索可加入当前项目的平台用户",
         "operationId": "list_users_api_v1_users_get",
         "security": [
           {
@@ -1867,6 +2331,22 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
             }
           }
         ],
@@ -1895,7 +2375,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "预创建本地用户（不自动分配项目权限）",
+        "summary": "预创建本地用户（仅系统管理员，不自动分配项目权限）",
         "operationId": "create_user_api_v1_users_post",
         "security": [
           {
@@ -1914,6 +2394,85 @@
         },
         "responses": {
           "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/global-access/users": {
+      "get": {
+        "tags": [
+          "系统管理与基础数据"
+        ],
+        "summary": "查询平台用户的所有项目角色授权（仅系统管理员）",
+        "operationId": "global_access_users_api_v1_global_access_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}/global-role": {
+      "put": {
+        "tags": [
+          "系统管理与基础数据"
+        ],
+        "summary": "授予或撤销用户的所有项目角色（仅系统管理员）",
+        "operationId": "update_global_role_api_v1_users__user_id__global_role_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GlobalRoleInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -1982,7 +2541,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "添加项目成员并分配角色",
+        "summary": "添加项目成员并分配非全局项目角色",
         "operationId": "add_member_api_v1_projects__project_id__members_post",
         "security": [
           {
@@ -2153,8 +2712,31 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "查询角色及按钮权限点",
+        "summary": "查询全局角色模板及按钮权限点（项目成员只读）",
         "operationId": "roles_api_v1_roles_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2163,29 +2745,39 @@
                 "schema": {}
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       },
       "post": {
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "新增自定义角色",
+        "summary": "新增全局自定义角色（仅系统管理员）",
         "operationId": "create_role_api_v1_roles_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/RoleInput"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "201": {
@@ -2206,12 +2798,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/permissions": {
@@ -2219,8 +2806,31 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "获取全部可配置按钮权限点",
+        "summary": "获取全部可配置项目权限点（项目成员只读）",
         "operationId": "all_permissions_api_v1_permissions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2229,13 +2839,18 @@
                 "schema": {}
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/roles/{role_id}": {
@@ -2243,7 +2858,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "编辑角色及按钮权限",
+        "summary": "编辑全局角色及按钮权限（仅系统管理员）",
         "operationId": "update_role_api_v1_roles__role_id__put",
         "security": [
           {
@@ -2296,7 +2911,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "删除未被使用的自定义角色",
+        "summary": "删除未被使用的全局自定义角色（仅系统管理员）",
         "operationId": "delete_role_api_v1_roles__role_id__delete",
         "security": [
           {
@@ -2672,6 +3287,23 @@
           "MANUAL"
         ],
         "title": "ExecutionType"
+      },
+      "GlobalRoleInput": {
+        "properties": {
+          "role_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Id"
+          }
+        },
+        "type": "object",
+        "title": "GlobalRoleInput"
       },
       "HTTPValidationError": {
         "properties": {

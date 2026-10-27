@@ -68,7 +68,14 @@ export const wkdList: Wkd[] = seeds.map((seed, index) => ({
   project: '晶圆检测设备', projectId: 'demo-project', version: index > 4 && index % 2 ? 'V3.1.0' : 'V3.2.0',
   versionId: index > 4 && index % 2 ? 'demo-version-31' : 'demo-version',
   description: `${seed[1]}。通过标准化规避措施保证设备任务稳定执行，并保留完整验证和审核记录。`,
-  operation: seed[8], executionType: 'AUTOMATED',
+  operation: seed[8], executionType: index % 5 === 3 ? 'MANUAL' : 'AUTOMATED',
+  activityScene: ['首版本部署', 'ES集成活动', '常规版本升级'][index % 3],
+  measureType: index % 4 === 3 ? '事后恢复措施' : '事前规避措施',
+  currentHandler: seed[6] === 'APPROVED' || seed[6] === 'DISABLED' ? undefined : seed[4],
+  currentHandlerId: seed[6] === 'APPROVED' || seed[6] === 'DISABLED' ? undefined : ownerIds[seed[4]],
+  foundVersion: index % 3 === 0 ? 'V3.0.2' : 'V3.1.0', foundVersionId: index % 3 === 0 ? 'demo-version-30' : 'demo-version-31',
+  plannedVersion: 'V3.2.0', plannedVersionId: 'demo-version',
+  issueNo: `ISSUE-${20261000 + index + 1}`, requirementNo: index % 3 === 0 ? '' : `REQ-${20261000 + index + 1}`,
 }))
 
 const DEMO_WKD_STORAGE_KEY = 'wmp-demo-wkds'

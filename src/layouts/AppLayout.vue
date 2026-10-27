@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { can, ensureOptions, logout, refreshPermissions, selectProject, store } from '../store'
 import { api, errorMessage } from '../api'
+import { firstSystemPath, hasSystemAccess as checkSystemAccess } from '../permissions'
 
 const route = useRoute()
 const router = useRouter()
@@ -11,7 +12,7 @@ const notificationRows = ref<{ id: string; title: string; content?: string }[]>(
 const unread = ref(0)
 const activeMenu = computed(() => route.path.startsWith('/build') ? route.path : route.path.startsWith('/wkd') ? '/workbench' : route.path)
 const breadcrumb = computed(() => route.path.startsWith('/build') ? ['构建 / 发布', route.meta.title as string] : [route.meta.title as string])
-const hasSystemAccess = computed(() => ['system.business.view','system.member.view','system.role.view'].some(can))
+const hasSystemAccess = computed(checkSystemAccess)
 const versionOptions = computed(() => store.options.versions.filter(item => item.project_id === store.projectId))
 
 async function signOut() {
@@ -62,8 +63,8 @@ onBeforeUnmount(() => window.removeEventListener('wmp:unauthorized', unauthorize
         <el-menu-item v-if="can('home.view')" index="/"><el-icon><HomeFilled /></el-icon><template #title>首页</template></el-menu-item>
         <el-menu-item v-if="can('wkd.view')" index="/workbench"><el-icon><Grid /></el-icon><template #title>工作台</template></el-menu-item>
         <el-sub-menu v-if="can('build.debug.view') || can('build.release.view')" index="/build"><template #title><el-icon><Box /></el-icon><span>构建 / 发布</span></template><el-menu-item v-if="can('build.debug.view')" index="/build/debug">调试构建</el-menu-item><el-menu-item v-if="can('build.release.view')" index="/build/release">正式构建</el-menu-item></el-sub-menu>
-        <el-menu-item v-if="can('stats.view')" index="/statistics"><el-icon><DataAnalysis /></el-icon><template #title>数据统计</template></el-menu-item>
-        <el-menu-item v-if="hasSystemAccess" :index="can('system.business.view') ? '/system/business' : can('system.member.view') ? '/system/members' : '/system/roles'"><el-icon><Setting /></el-icon><template #title>系统管理</template></el-menu-item>
+        <el-menu-item index="/statistics"><el-icon><DataAnalysis /></el-icon><template #title>数据统计</template></el-menu-item>
+        <el-menu-item v-if="hasSystemAccess" :index="firstSystemPath()"><el-icon><Setting /></el-icon><template #title>系统管理</template></el-menu-item>
       </el-menu>
       <div class="sidebar-bottom"><div v-show="!store.sidebarCollapsed" class="release-note"><span class="release-dot" /><div><strong>WMP v1.4</strong><small>{{ store.demoMode ? 'Demo 数据模式' : 'API 已连接' }}</small></div></div><button class="collapse-button" @click="store.sidebarCollapsed = !store.sidebarCollapsed" :title="store.sidebarCollapsed ? '展开导航' : '收起导航'"><el-icon><Expand v-if="store.sidebarCollapsed" /><Fold v-else /></el-icon><span v-show="!store.sidebarCollapsed">收起导航</span></button></div>
     </aside>

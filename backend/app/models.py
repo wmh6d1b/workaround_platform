@@ -48,6 +48,8 @@ class User(Base):
     oauth_subject: Mapped[str | None] = mapped_column(String(255), unique=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    global_role_id: Mapped[str | None] = mapped_column(String(36), ForeignKey('roles.id', ondelete='RESTRICT'), nullable=True)
+    global_role: Mapped['Role | None'] = relationship(lazy='joined', foreign_keys=[global_role_id])
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class Role(Base):

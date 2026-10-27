@@ -190,6 +190,9 @@ class RoleInput(BaseModel):
     description: str = ''
     permissions: list[str] = Field(default_factory=list)
 
+class GlobalRoleInput(BaseModel):
+    role_id: str | None = None
+
 class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -2,8 +2,9 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TreeInstance } from 'element-plus'
-import { api, errorMessage } from '../../api'
-import { can, store } from '../../store'
+import { api, errorMessage, queryString } from '../../api'
+import { store } from '../../store'
+import { isGlobalAdmin } from '../../permissions'
 
 interface Role { id: string; name: string; description: string; built_in: boolean; permissions: string[] }
 interface Permission { code: string; module: string; description: string }
@@ -16,7 +17,8 @@ const loading = ref(false)
 const saving = ref(false)
 const newRole = reactive({ name:'', description:'' })
 const selectedRole = computed(() => roles.value.find(item => item.id === selectedId.value))
-const moduleNames: Record<string,string> = { home:'首页', wkd:'WKD 全生命周期', build:'构建 / 发布', stats:'数据统计', system:'系统管理', files:'附件管理' }
+const canEdit = computed(isGlobalAdmin)
+const moduleNames: Record<string,string> = { home:'首页', wkd:'WKD 全生命周期', build:'构建 / 发布', stats:'数据统计', business:'业务管理', project:'项目管理', files:'附件管理' }
 const permissionTree = computed(() => {
   const groups = new Map<string, { id: string; label: string; children: { id: string; label: string }[] }>()
   permissions.value.forEach(item => {
@@ -26,10 +28,10 @@ const permissionTree = computed(() => {
   return [...groups.values()]
 })
 const fallbackPermissions: Permission[] = [
-  ['home.view','home','查看首页'],['wkd.view','wkd','查看 WKD'],['wkd.create','wkd','新建 WKD'],['wkd.edit','wkd','编辑 WKD'],['wkd.submit','wkd','提交自验证或审核'],['wkd.review','wkd','软件经理审核'],['wkd.disable','wkd','禁用 WKD'],['wkd.note','wkd','填写状态说明'],['build.debug.view','build','查看调试构建'],['build.debug.build','build','执行调试构建'],['build.release.view','build','查看正式构建和制品'],['build.release.build','build','执行正式构建'],['build.release.download','build','下载构建制品'],['stats.view','stats','查看数据统计'],['stats.export','stats','导出统计明细'],['system.business.view','system','查看业务管理'],['system.business.edit','system','维护业务数据'],['system.member.view','system','查看项目成员'],['system.member.edit','system','管理项目成员'],['system.role.view','system','查看角色权限'],['system.role.edit','system','配置角色权限'],['files.upload','files','上传附件'],['files.download','files','下载附件'],
+  ['home.view','home','查看首页'],['wkd.view','wkd','查看 WKD'],['wkd.create','wkd','新建 WKD'],['wkd.edit','wkd','编辑 WKD'],['wkd.submit','wkd','提交自验证或审核'],['wkd.review','wkd','软件经理审核'],['wkd.disable','wkd','禁用 WKD'],['wkd.note','wkd','填写状态说明'],['build.debug.view','build','查看调试构建'],['build.debug.build','build','执行调试构建'],['build.release.view','build','查看正式构建和制品'],['build.release.build','build','执行正式构建'],['build.release.download','build','下载构建制品'],['business.version.view','business','查看版本管理'],['business.version.edit','business','维护版本数据'],['business.machine.view','business','查看机台管理'],['business.machine.edit','business','维护机台数据'],['business.subsystem.view','business','查看子系统管理'],['business.subsystem.edit','business','维护子系统数据'],['project.member.view','project','查看项目成员'],['project.member.manage','project','管理项目成员及角色分配'],['project.role.view','project','查看项目角色权限'],['files.upload','files','上传附件'],['files.download','files','下载附件'],
 ].map(([code,module,description]) => ({code,module,description}))
-const developerPermissions = ['home.view','wkd.view','wkd.create','wkd.edit','wkd.submit','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','stats.view','stats.export','files.upload','files.download']
-const managerPermissions = ['home.view','wkd.view','wkd.edit','wkd.review','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','stats.view','stats.export','files.upload','files.download']
+const developerPermissions = ['home.view','wkd.view','wkd.create','wkd.edit','wkd.submit','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','files.upload','files.download']
+const managerPermissions = ['home.view','wkd.view','wkd.edit','wkd.review','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','files.upload','files.download']
 
 async function load() {
   loading.value = true
@@ -37,7 +39,7 @@ async function load() {
     if (store.demoMode) {
       permissions.value = fallbackPermissions
       roles.value = store.options.roles.map(item => ({ id:item.id, name:item.name, description:String(item.description || ''), built_in:Boolean(item.built_in), permissions:item.name === '开发人员' ? developerPermissions : item.name === '软件经理' ? managerPermissions : fallbackPermissions.map(permission => permission.code) }))
-    } else [roles.value, permissions.value] = await Promise.all([api.get<Role[]>('/roles'), api.get<Permission[]>('/permissions')])
+    } else [roles.value, permissions.value] = await Promise.all([api.get<Role[]>(`/roles${queryString({ project_id:store.projectId })}`), api.get<Permission[]>(`/permissions${queryString({ project_id:store.projectId })}`)])
     if (!selectedId.value || !roles.value.some(item => item.id === selectedId.value)) selectedId.value = roles.value[0]?.id || ''
     await nextTick()
     syncChecks()
@@ -94,8 +96,8 @@ onMounted(load)
 </script>
 
 <template>
-  <section v-loading="loading" class="role-layout"><div class="surface-card role-list"><div class="card-header"><div><h3>角色列表</h3><p>{{ roles.length }} 个项目角色</p></div><el-button text type="primary" :disabled="!can('system.role.edit')" @click="dialogOpen=true"><el-icon><Plus /></el-icon></el-button></div><button v-for="(role,index) in roles" :key="role.id" :class="{active:selectedId===role.id}" @click="selectRole(role.id)"><span class="role-icon" :class="['blue','green','orange','violet'][index%4]"><el-icon><UserFilled /></el-icon></span><span class="role-copy"><strong>{{ role.name }}<small v-if="role.built_in">预设</small></strong><span>{{ role.description }}</span><small>{{ role.permissions.length }} 个权限点</small></span><el-icon><ArrowRight /></el-icon></button></div>
-    <div class="surface-card permission-panel"><div class="permission-header"><div><span class="permission-kicker">PERMISSION CONFIGURATION</span><h2>{{ selectedRole?.name || '请选择角色' }}</h2><p>权限精确到核心模块下的每个操作按钮</p></div><div><el-button v-if="selectedRole && !selectedRole.built_in" class="danger-button" :disabled="!can('system.role.edit')" @click="removeRole">删除角色</el-button><el-button type="primary" :disabled="!selectedRole || !can('system.role.edit')" :loading="saving" @click="savePermissions"><el-icon><Check /></el-icon>保存权限</el-button></div></div><div class="permission-note"><el-icon><InfoFilled /></el-icon>勾选模块将授予基础访问权限，按钮权限可独立配置；所有业务接口会在服务端按当前项目角色再次鉴权。</div><el-tree ref="treeRef" :data="permissionTree" show-checkbox node-key="id" default-expand-all class="permission-tree"><template #default="{data}"><span :class="{'permission-parent':data.children}">{{ data.label }}</span></template></el-tree><div class="permission-footer"><span><el-icon><Lock /></el-icon>保存后，用户下次获取项目权限时生效</span></div></div>
+  <section v-loading="loading" class="role-layout"><div class="surface-card role-list"><div class="card-header"><div><h3>角色列表</h3><p>{{ roles.length }} 个角色模板</p></div><el-button v-if="canEdit" text type="primary" @click="dialogOpen=true"><el-icon><Plus /></el-icon></el-button></div><button v-for="(role,index) in roles" :key="role.id" :class="{active:selectedId===role.id}" @click="selectRole(role.id)"><span class="role-icon" :class="['blue','green','orange','violet'][index%4]"><el-icon><UserFilled /></el-icon></span><span class="role-copy"><strong>{{ role.name }}<small v-if="role.built_in">预设</small></strong><span>{{ role.description }}</span><small>{{ role.permissions.length }} 个权限点</small></span><el-icon><ArrowRight /></el-icon></button></div>
+    <div class="surface-card permission-panel"><div class="permission-header"><div><span class="permission-kicker">PERMISSION CONFIGURATION</span><h2>{{ selectedRole?.name || '请选择角色' }}</h2><p>权限精确到核心模块下的每个操作按钮</p></div><div><el-button v-if="canEdit && selectedRole && !selectedRole.built_in" class="danger-button" @click="removeRole">删除角色</el-button><el-button v-if="canEdit" type="primary" :disabled="!selectedRole" :loading="saving" @click="savePermissions"><el-icon><Check /></el-icon>保存权限</el-button></div></div><div class="permission-note"><el-icon><InfoFilled /></el-icon>{{ canEdit ? '全局角色模板仅由系统管理员维护，修改会影响所有使用该角色的项目。' : '当前为只读视图；你可以在成员管理中为当前项目分配角色，不能修改全局权限。' }}</div><el-tree ref="treeRef" :data="permissionTree" :show-checkbox="canEdit" node-key="id" default-expand-all class="permission-tree"><template #default="{data}"><span :class="{'permission-parent':data.children}">{{ data.label }}</span></template></el-tree><div class="permission-footer"><span><el-icon><Lock /></el-icon>{{ canEdit ? '保存后，用户下次获取项目权限时生效' : '项目管理员仅可查看角色权限，全局配置由系统管理员维护' }}</span></div></div>
   </section>
   <el-dialog v-model="dialogOpen" title="新增自定义角色" width="480px"><el-form label-position="top" class="dialog-form"><el-form-item label="角色名称" required><el-input v-model="newRole.name" placeholder="如：质量工程师" /></el-form-item><el-form-item label="角色描述"><el-input v-model="newRole.description" type="textarea" :rows="3" placeholder="说明该角色的职责和权限范围" /></el-form-item></el-form><template #footer><el-button @click="dialogOpen=false">取消</el-button><el-button type="primary" :loading="saving" @click="addRole">创建角色</el-button></template></el-dialog>
 </template>

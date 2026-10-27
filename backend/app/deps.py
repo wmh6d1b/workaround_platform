@@ -20,6 +20,12 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, '用户不存在或已停用')
     return user
 
+def require_superuser(user: User) -> None:
+    """Guard platform-wide operations; project roles must never grant them."""
+    if not user.is_superuser:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, '仅系统管理员可执行全局管理操作')
+
+
 def authorize(db: Session, user: User, permission: str, project_id: str | None = None) -> None:
     if user.is_superuser:
         return

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { can, store } from './store'
+import { hasBusinessAccess } from './permissions'
 import { ElMessage } from 'element-plus'
 import AppLayout from './layouts/AppLayout.vue'
 import LoginView from './views/LoginView.vue'
@@ -27,7 +28,7 @@ const router = createRouter({
         { path: 'wkd/:id', name: 'wkd-detail', component: WkdDetailView, meta: { title: 'WKD 详情', permission: 'wkd.view' } },
         { path: 'build/debug', name: 'debug-build', component: DebugBuildView, meta: { title: '调试构建', permission: 'build.debug.view' } },
         { path: 'build/release', name: 'release-build', component: ReleaseBuildView, meta: { title: '正式构建', permission: 'build.release.view' } },
-        { path: 'statistics', name: 'statistics', component: StatisticsView, meta: { title: '数据统计', permission: 'stats.view' } },
+        { path: 'statistics', name: 'statistics', component: StatisticsView, meta: { title: '数据统计' } },
         { path: 'system/:tab?', name: 'system', component: SystemView, meta: { title: '系统管理' } },
       ],
     },
@@ -41,7 +42,11 @@ router.beforeEach((to) => {
   let permission = to.meta.permission as string | undefined
   if (to.name === 'system') {
     const tab = String(to.params.tab || 'business')
-    permission = tab === 'members' ? 'system.member.view' : tab === 'roles' ? 'system.role.view' : 'system.business.view'
+    if (tab === 'business' && !hasBusinessAccess()) {
+      ElMessage.warning('当前项目角色没有业务管理权限')
+      return { name: 'home' }
+    }
+    permission = tab === 'members' ? 'project.member.view' : tab === 'roles' ? 'project.role.view' : undefined
   }
   if (permission && !can(permission)) {
     ElMessage.warning('当前项目角色没有此模块的访问权限')

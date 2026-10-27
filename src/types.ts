@@ -24,6 +24,16 @@ export interface Wkd {
   description: string
   operation: string
   executionType?: ExecutionType
+  activityScene?: string
+  measureType?: string
+  currentHandler?: string
+  currentHandlerId?: string
+  foundVersion?: string
+  foundVersionId?: string
+  plannedVersion?: string
+  plannedVersionId?: string
+  issueNo?: string
+  requirementNo?: string
   operations?: { id?: string; position?: number; type: string; params: Record<string, any> }[]
   packageData?: Record<string, any>
 }

@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .db import Base, SessionLocal, engine
-from .routers import admin, auth, builds, dashboard, files, wkd
+from .routers import admin, auth, builds, dashboard, files, statistics, wkd
 from .seed import seed
 
 settings = get_settings()
@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
         connection.execute(text("ALTER TYPE wkdstatus ADD VALUE IF NOT EXISTS 'DISABLE_CONFIRM'"))
         connection.execute(text('ALTER TABLE wkd_history ADD COLUMN IF NOT EXISTS changes JSONB'))
         connection.execute(text('ALTER TABLE wkds ADD COLUMN IF NOT EXISTS current_handler_id VARCHAR(36) REFERENCES users(id)'))
+        connection.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS global_role_id VARCHAR(36) REFERENCES roles(id) ON DELETE RESTRICT'))
         connection.execute(text("UPDATE wkds SET current_handler_id = owner_id WHERE current_handler_id IS NULL AND status IN ('NEW_WKD', 'VERIFY')"))
     with SessionLocal() as db:
         seed(db)
@@ -29,6 +30,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credent
                    allow_methods=['*'], allow_headers=['*'])
 app.include_router(auth.router, prefix='/api/v1')
 app.include_router(dashboard.router, prefix='/api/v1')
+app.include_router(statistics.router, prefix='/api/v1')
 app.include_router(wkd.router, prefix='/api/v1')
 app.include_router(builds.router, prefix='/api/v1')
 app.include_router(files.router, prefix='/api/v1')

@@ -9,7 +9,11 @@
 ## 鉴权约定
 
 除本地登录、OIDC 登录发起/回调和健康检查外，所有接口均要求请求头 `Authorization: Bearer <token>`。
-服务端按“项目成员 → 项目角色 → 按钮权限点”鉴权；全局系统管理员拥有全部权限。前端隐藏按钮不能替代服务端鉴权。
+项目内接口按“当前项目成员 → 项目角色 → 按钮权限点”鉴权；全局系统管理员拥有全部权限。前端隐藏按钮不能替代服务端鉴权。
+
+项目创建、修改、删除，平台用户预创建，全局角色模板增删改和全局审计日志仅允许系统管理员。项目管理员只能维护当前项目的版本、机台、子系统、成员及角色分配，角色模板仅可只读查看。
+
+非系统管理员查询项目内业务数据、平台用户目录、角色和权限时必须传入 `project_id`。业务数据不允许转移到其他项目；系统管理员角色不可作为项目角色分配，项目管理员也不能修改或移除已有系统管理员成员，且项目必须至少保留一名项目管理员。
 
 ## 通用响应
 
@@ -30,16 +34,22 @@
 | `POST` | `/api/v1/auth/logout` | 退出登录并记录审计 |
 | `POST` | `/api/v1/auth/password/forgot` | 忘记密码入口 |
 
-## 首页、通知与数据统计
+## 首页与通知
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/v1/dashboard/summary` | 首页指标、最近更新与待办数据 |
 | `GET` | `/api/v1/notifications` | 查询当前用户通知 |
 | `POST` | `/api/v1/notifications/read` | 将全部通知标记为已读 |
-| `GET` | `/api/v1/statistics` | 按项目、版本、机台、子系统和日期查询统计数据及流转趋势 |
-| `GET` | `/api/v1/statistics/export` | 鉴权并导出统计明细 CSV |
-| `GET` | `/api/v1/audit-logs` | 查询重要操作审计日志 |
+| `GET` | `/api/v1/audit-logs` | 查询全局重要操作审计日志（仅系统管理员） |
+
+## 数据统计
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/v1/statistics/options` | 获取全部统计筛选项（所有已登录用户） |
+| `GET` | `/api/v1/statistics` | 项目内或全局多维统计（所有已登录用户，多选筛选、趋势与分布） |
+| `GET` | `/api/v1/statistics/export` | 按相同条件导出完整统计明细 CSV（所有已登录用户） |
 
 ## WKD 全生命周期
 
@@ -74,28 +84,40 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/v1/bootstrap/options` | 获取可访问项目及版本、机台、子系统、责任人与角色选项 |
+| `GET` | `/api/v1/bootstrap/options` | 获取可访问项目及版本、机台、子系统、责任人与可分配角色选项 |
 | `GET` | `/api/v1/business/{resource}` | 查询项目、版本、机台或子系统列表 |
 | `POST` | `/api/v1/business/{resource}` | 新增项目、版本、机台或子系统 |
 | `PUT` | `/api/v1/business/{resource}/{item_id}` | 修改业务基础数据 |
 | `DELETE` | `/api/v1/business/{resource}/{item_id}` | 删除未被引用的业务基础数据 |
-| `GET` | `/api/v1/users` | 按姓名、用户名或工号查询平台用户 |
-| `POST` | `/api/v1/users` | 预创建本地用户（不自动分配项目权限） |
+| `GET` | `/api/v1/users` | 按姓名、用户名或工号搜索可加入当前项目的平台用户 |
+| `POST` | `/api/v1/users` | 预创建本地用户（仅系统管理员，不自动分配项目权限） |
+| `GET` | `/api/v1/global-access/users` | 查询平台用户的所有项目角色授权（仅系统管理员） |
+| `PUT` | `/api/v1/users/{user_id}/global-role` | 授予或撤销用户的所有项目角色（仅系统管理员） |
 | `GET` | `/api/v1/projects/{project_id}/members` | 查询项目成员及项目角色 |
-| `POST` | `/api/v1/projects/{project_id}/members` | 添加项目成员并分配角色 |
+| `POST` | `/api/v1/projects/{project_id}/members` | 添加项目成员并分配非全局项目角色 |
 | `PUT` | `/api/v1/projects/{project_id}/members/{member_id}` | 调整成员在当前项目中的角色 |
 | `DELETE` | `/api/v1/projects/{project_id}/members/{member_id}` | 将成员移出项目 |
-| `GET` | `/api/v1/roles` | 查询角色及按钮权限点 |
-| `POST` | `/api/v1/roles` | 新增自定义角色 |
-| `GET` | `/api/v1/permissions` | 获取全部可配置按钮权限点 |
-| `PUT` | `/api/v1/roles/{role_id}` | 编辑角色及按钮权限 |
-| `DELETE` | `/api/v1/roles/{role_id}` | 删除未被使用的自定义角色 |
+| `GET` | `/api/v1/roles` | 查询全局角色模板及按钮权限点（项目成员只读） |
+| `POST` | `/api/v1/roles` | 新增全局自定义角色（仅系统管理员） |
+| `GET` | `/api/v1/permissions` | 获取全部可配置项目权限点（项目成员只读） |
+| `PUT` | `/api/v1/roles/{role_id}` | 编辑全局角色及按钮权限（仅系统管理员） |
+| `DELETE` | `/api/v1/roles/{role_id}` | 删除未被使用的全局自定义角色（仅系统管理员） |
 
 ## 系统
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/health` | 服务健康检查 |
+
+## 数据统计作用域与筛选
+
+`GET /api/v1/statistics`、`GET /api/v1/statistics/options` 与 `GET /api/v1/statistics/export` 对所有已登录用户开放，不配置角色权限点；未登录访问仍返回 `401`。项目统计（`scope=project`）必须且只能传入一个 `project_ids`；全局统计（`scope=global`）可传多个项目或不传项目查询全部。页面、筛选项和导出均不校验项目成员或角色。
+
+多选参数包括项目、所属版本、问题发现版本、规划解决版本、机台、子系统、状态、执行类型、活动场景、措施类型、责任人、当前处理人与执行阶段。`keyword` 匹配 WKD 编号、标题、问题单号和需求单号；`date_field=created|updated` 配合 `start_date`、`end_date` 筛选创建或更新时间，单次统计周期不超过 366 天。所有筛选同时作用于指标、趋势、分布、项目对比、明细和导出。
+
+## 所有项目授权
+
+`GET /api/v1/global-access/users` 查询平台用户的全局角色，`PUT /api/v1/users/{user_id}/global-role` 授予、调整或撤销全局角色，两个接口均仅允许系统管理员。全局角色保存于 `users.global_role_id`，不创建项目成员关系，不改变具体项目角色；角色仍被全局授权使用时不可删除。
 
 ## 企业 OIDC 登录
 

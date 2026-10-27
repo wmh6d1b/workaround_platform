@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { can, store } from '../store'
+import { firstSystemPath, firstSystemPermission } from '../permissions'
 import { artifacts, wkdList } from '../data/mock'
 import { api, displayNumber, errorMessage, normalizeWkd, queryString } from '../api'
 import type { Wkd } from '../types'
@@ -19,9 +20,9 @@ const dateLabel = computed(() => dayjs().format('dddd · DD MMMM').toUpperCase()
 const modules = computed(() => [
   { name: '工作台', en: 'WORKBENCH', desc: '检索、登记并跟进 WKD 全流程', icon: 'Grid', path: '/workbench', tone: 'blue', permission: 'wkd.view' },
   { name: '构建 / 发布', en: 'BUILD & RELEASE', desc: '调试构建与正式规避包交付', icon: 'Box', path: can('build.debug.view') ? '/build/debug' : '/build/release', tone: 'violet', permission: can('build.debug.view') ? 'build.debug.view' : 'build.release.view' },
-  { name: '数据统计', en: 'ANALYTICS', desc: '多维分析规避措施执行数据', icon: 'DataAnalysis', path: '/statistics', tone: 'green', permission: 'stats.view' },
-  { name: '系统管理', en: 'ADMINISTRATION', desc: '业务、成员与角色权限管理', icon: 'Setting', path: can('system.business.view') ? '/system/business' : can('system.member.view') ? '/system/members' : '/system/roles', tone: 'orange', permission: can('system.business.view') ? 'system.business.view' : can('system.member.view') ? 'system.member.view' : 'system.role.view' },
-].filter(item => can(item.permission)))
+  { name: '数据统计', en: 'ANALYTICS', desc: '多维分析规避措施执行数据', icon: 'DataAnalysis', path: '/statistics', tone: 'green', permission: '' },
+  { name: '系统管理', en: 'ADMINISTRATION', desc: '项目内业务、成员与角色权限管理', icon: 'Setting', path: firstSystemPath(), tone: 'orange', permission: firstSystemPermission() },
+].filter(item => !item.permission || can(item.permission)))
 
 async function load() {
   loading.value = true

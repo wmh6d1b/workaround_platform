@@ -1,23 +1,67 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from ..db import get_db
-from ..deps import authorize, current_user
-from ..models import Machine, Permission, Project, ProjectMember, Role, RolePermission, Subsystem, User, Version
-from ..schemas import EntityInput, MemberInput, RoleInput, UserInput
+from ..deps import authorize, current_user, require_superuser
+from ..models import Machine, Permission, Project, ProjectMember, Role, Subsystem, User, Version
+from ..schemas import EntityInput, GlobalRoleInput, MemberInput, RoleInput, UserInput
 from ..services import audit, commit
 
 router = APIRouter(tags=['系统管理与基础数据'])
 resources = {'projects': Project, 'versions': Version, 'machines': Machine, 'subsystems': Subsystem}
+business_permissions = {
+    'versions': 'business.version',
+    'machines': 'business.machine',
+    'subsystems': 'business.subsystem',
+}
+
 
 def entity_out(item) -> dict:
     return {c.name: getattr(item, c.name) for c in item.__table__.columns}
+
 
 def user_out(item: User) -> dict:
     return {'id': item.id, 'username': item.username, 'employee_id': item.employee_id,
             'name': item.name, 'email': item.email, 'is_superuser': item.is_superuser}
 
-@router.get('/bootstrap/options', summary='获取可访问项目及版本、机台、子系统、责任人与角色选项')
+
+def directory_user_out(item: User) -> dict:
+    return {'id': item.id, 'username': item.username, 'employee_id': item.employee_id, 'name': item.name}
+
+
+def require_role_read(db: Session, user: User, project_id: str | None) -> None:
+    if not user.is_superuser:
+        if not project_id:
+            raise HTTPException(422, '项目成员查看角色时必须指定项目')
+        authorize(db, user, 'project.role.view', project_id)
+
+
+def assignable_role(db: Session, role_id: str) -> Role:
+    role = db.get(Role, role_id)
+    if not role:
+        raise HTTPException(404, '项目角色不存在')
+    if role.name == '系统管理员':
+        raise HTTPException(403, '系统管理员不是可分配的项目角色')
+    return role
+
+
+def ensure_member_editable(actor: User, member: ProjectMember) -> None:
+    if not actor.is_superuser and (member.user.is_superuser or member.role.name == '系统管理员'):
+        raise HTTPException(403, '项目管理员不能修改或移除系统管理员')
+
+
+def ensure_project_admin_retained(db: Session, project_id: str, member: ProjectMember, new_role_id: str | None = None) -> None:
+    if member.role.name != '项目管理员' or new_role_id == member.role_id:
+        return
+    # Serialize admin changes per project so two concurrent demotions cannot remove both admins.
+    db.get(Project, project_id, with_for_update=True)
+    count = db.scalar(select(func.count(ProjectMember.id)).join(Role, ProjectMember.role_id == Role.id).where(
+        ProjectMember.project_id == project_id, Role.name == '项目管理员'))
+    if (count or 0) <= 1:
+        raise HTTPException(409, '项目必须至少保留一名项目管理员')
+
+
+@router.get('/bootstrap/options', summary='获取可访问项目及版本、机台、子系统、责任人与可分配角色选项')
 def options(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     projects = db.scalars(select(Project)).all()
     if not user.is_superuser:
@@ -26,7 +70,10 @@ def options(project_id: str | None = None, db: Session = Depends(get_db), user: 
     accessible = {x.id for x in projects}
     if project_id and project_id not in accessible:
         raise HTTPException(403, '你不是该项目成员')
-    result = {'projects': [entity_out(x) for x in projects], 'roles': [entity_out(x) for x in db.scalars(select(Role)).all()]}
+    roles = db.scalars(select(Role)).all()
+    if not user.is_superuser:
+        roles = [role for role in roles if role.name != '系统管理员']
+    result = {'projects': [entity_out(x) for x in projects], 'roles': [entity_out(x) for x in roles]}
     for name, model in [('versions', Version), ('machines', Machine), ('subsystems', Subsystem)]:
         query = select(model)
         if project_id:
@@ -41,33 +88,48 @@ def options(project_id: str | None = None, db: Session = Depends(get_db), user: 
         member_query = member_query.where(ProjectMember.project_id.in_(accessible))
     members = db.scalars(member_query).unique().all()
     users = {x.user.id: x.user for x in members}
-    if user.is_superuser: users[user.id] = user
+    if user.is_superuser:
+        users[user.id] = user
     result['users'] = [{'id': x.id, 'name': x.name, 'username': x.username, 'employee_id': x.employee_id, 'email': x.email} for x in users.values()]
     return result
+
 
 @router.get('/business/{resource}', summary='查询项目、版本、机台或子系统列表')
 def list_business(resource: str, project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     model = resources.get(resource)
-    if not model: raise HTTPException(404, '未知业务资源')
-    authorize(db, user, 'system.business.view', project_id)
+    if not model:
+        raise HTTPException(404, '未知业务资源')
     query = select(model)
-    if project_id and resource != 'projects':
-        query = query.where(model.project_id == project_id)
-    elif not user.is_superuser:
-        allowed = set(db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)).all())
-        query = query.where(model.id.in_(allowed) if resource == 'projects' else model.project_id.in_(allowed))
+    if resource == 'projects':
+        if not user.is_superuser:
+            allowed = set(db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)).all())
+            query = query.where(model.id.in_(allowed))
+    else:
+        if not project_id and not user.is_superuser:
+            raise HTTPException(422, '必须指定所属项目')
+        authorize(db, user, f'{business_permissions[resource]}.view', project_id)
+        if project_id:
+            query = query.where(model.project_id == project_id)
     return [entity_out(x) for x in db.scalars(query).all()]
+
 
 @router.post('/business/{resource}', status_code=201, summary='新增项目、版本、机台或子系统')
 def create_business(resource: str, payload: EntityInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
     model = resources.get(resource)
-    if not model: raise HTTPException(404, '未知业务资源')
-    authorize(db, user, 'system.business.edit', payload.project_id)
+    if not model:
+        raise HTTPException(404, '未知业务资源')
+    if resource == 'projects':
+        require_superuser(user)
+    else:
+        if not payload.project_id:
+            raise HTTPException(422, '必须指定所属项目')
+        authorize(db, user, f'{business_permissions[resource]}.edit', payload.project_id)
     values = payload.model_dump(exclude_none=True)
-    if resource == 'versions': values['number'] = payload.number or payload.name
-    if resource == 'versions': values.pop('name', None)
-    if resource == 'projects': values.pop('project_id', None)
-    if resource != 'projects' and not payload.project_id: raise HTTPException(422, '必须指定所属项目')
+    if resource == 'versions':
+        values['number'] = payload.number or payload.name
+        values.pop('name', None)
+    if resource == 'projects':
+        values.pop('project_id', None)
     item = model(**values)
     db.add(item)
     db.flush()
@@ -75,43 +137,67 @@ def create_business(resource: str, payload: EntityInput, db: Session = Depends(g
     commit(db)
     return entity_out(item)
 
+
 @router.put('/business/{resource}/{item_id}', summary='修改业务基础数据')
 def update_business(resource: str, item_id: str, payload: EntityInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
     model = resources.get(resource)
-    if not model: raise HTTPException(404, '未知业务资源')
+    if not model:
+        raise HTTPException(404, '未知业务资源')
     item = db.get(model, item_id)
-    if not item: raise HTTPException(404, '数据不存在')
-    project_id = item.id if resource == 'projects' else item.project_id
-    authorize(db, user, 'system.business.edit', project_id)
-    for key, value in payload.model_dump(exclude_none=True, exclude={'name'} if resource == 'versions' else set()).items():
-        if hasattr(item, key): setattr(item, key, value)
-    if resource == 'versions': item.number = payload.number or payload.name
+    if not item:
+        raise HTTPException(404, '数据不存在')
+    if resource == 'projects':
+        require_superuser(user)
+    else:
+        authorize(db, user, f'{business_permissions[resource]}.edit', item.project_id)
+        if payload.project_id and payload.project_id != item.project_id:
+            raise HTTPException(403, '不允许将业务数据转移到其他项目')
+    excluded = {'name'} if resource == 'versions' else set()
+    if resource != 'projects':
+        excluded = {*excluded, 'project_id'}
+    for key, value in payload.model_dump(exclude_none=True, exclude=excluded).items():
+        if hasattr(item, key):
+            setattr(item, key, value)
+    if resource == 'versions':
+        item.number = payload.number or payload.name
     audit(db, user, 'BUSINESS_UPDATE', resource, item.id)
     commit(db)
     return entity_out(item)
 
+
 @router.delete('/business/{resource}/{item_id}', summary='删除未被引用的业务基础数据')
 def delete_business(resource: str, item_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     model = resources.get(resource)
-    if not model: raise HTTPException(404, '未知业务资源')
+    if not model:
+        raise HTTPException(404, '未知业务资源')
     item = db.get(model, item_id)
-    if not item: raise HTTPException(404, '数据不存在')
-    authorize(db, user, 'system.business.edit', item.id if resource == 'projects' else item.project_id)
+    if not item:
+        raise HTTPException(404, '数据不存在')
+    if resource == 'projects':
+        require_superuser(user)
+    else:
+        authorize(db, user, f'{business_permissions[resource]}.edit', item.project_id)
     audit(db, user, 'BUSINESS_DELETE', resource, item.id)
     db.delete(item)
     commit(db)
     return {'message': '删除成功'}
 
-@router.get('/users', summary='按姓名、用户名或工号查询平台用户')
-def list_users(q: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.member.view')
-    query = select(User)
-    if q: query = query.where((User.name.ilike(f'%{q}%')) | (User.username.ilike(f'%{q}%')) | (User.employee_id.ilike(f'%{q}%')))
-    return [user_out(x) for x in db.scalars(query).all()]
 
-@router.post('/users', status_code=201, summary='预创建本地用户（不自动分配项目权限）')
+@router.get('/users', summary='按姓名、用户名或工号搜索可加入当前项目的平台用户')
+def list_users(q: str | None = None, project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not user.is_superuser:
+        if not project_id:
+            raise HTTPException(422, '搜索平台用户时必须指定项目')
+        authorize(db, user, 'project.member.view', project_id)
+    query = select(User).where(User.is_active.is_(True), User.is_superuser.is_(False))
+    if q:
+        query = query.where((User.name.ilike(f'%{q}%')) | (User.username.ilike(f'%{q}%')) | (User.employee_id.ilike(f'%{q}%')))
+    return [directory_user_out(x) for x in db.scalars(query).all()]
+
+
+@router.post('/users', status_code=201, summary='预创建本地用户（仅系统管理员，不自动分配项目权限）')
 def create_user(payload: UserInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.member.edit')
+    require_superuser(user)
     item = User(**payload.model_dump())
     db.add(item)
     db.flush()
@@ -119,56 +205,98 @@ def create_user(payload: UserInput, db: Session = Depends(get_db), user: User = 
     commit(db)
     return user_out(item)
 
+
+@router.get('/global-access/users', summary='查询平台用户的所有项目角色授权（仅系统管理员）')
+def global_access_users(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_superuser(user)
+    rows = db.scalars(select(User).where(User.is_active.is_(True), User.is_superuser.is_(False))).all()
+    return [{**directory_user_out(x), 'email': x.email, 'global_role_id': x.global_role_id,
+             'global_role': x.global_role.name if x.global_role else None} for x in rows]
+
+
+@router.put('/users/{user_id}/global-role', summary='授予或撤销用户的所有项目角色（仅系统管理员）')
+def update_global_role(user_id: str, payload: GlobalRoleInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_superuser(user)
+    item = db.get(User, user_id)
+    if not item or not item.is_active or item.is_superuser:
+        raise HTTPException(404, '可授权的平台用户不存在')
+    if payload.role_id:
+        assignable_role(db, payload.role_id)
+    item.global_role_id = payload.role_id
+    audit(db, user, 'GLOBAL_ROLE_UPDATE', 'user', item.id, {'role_id': payload.role_id})
+    commit(db)
+    return {'message': '所有项目授权已更新', 'global_role_id': item.global_role_id}
+
+
 @router.get('/projects/{project_id}/members', summary='查询项目成员及项目角色')
 def members(project_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.member.view', project_id)
+    authorize(db, user, 'project.member.view', project_id)
     rows = db.scalars(select(ProjectMember).where(ProjectMember.project_id == project_id)).all()
     return [{'id': x.id, 'project_id': x.project_id, 'role_id': x.role_id, 'role': x.role.name,
              'user': {'id': x.user.id, 'name': x.user.name, 'username': x.user.username, 'employee_id': x.user.employee_id, 'email': x.user.email}} for x in rows]
 
-@router.post('/projects/{project_id}/members', status_code=201, summary='添加项目成员并分配角色')
+
+@router.post('/projects/{project_id}/members', status_code=201, summary='添加项目成员并分配非全局项目角色')
 def add_member(project_id: str, payload: MemberInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.member.edit', project_id)
+    authorize(db, user, 'project.member.manage', project_id)
+    assignable_role(db, payload.role_id)
+    member_user = db.get(User, payload.user_id)
+    if not member_user or not member_user.is_active or member_user.is_superuser:
+        raise HTTPException(422, '只能添加已启用且非系统管理员的平台用户')
     item = ProjectMember(project_id=project_id, user_id=payload.user_id, role_id=payload.role_id)
     db.add(item)
     audit(db, user, 'MEMBER_ADD', 'project', project_id, {'member_user_id': payload.user_id})
     commit(db)
     return {'id': item.id, **payload.model_dump()}
 
+
 @router.put('/projects/{project_id}/members/{member_id}', summary='调整成员在当前项目中的角色')
 def update_member(project_id: str, member_id: str, payload: MemberInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.member.edit', project_id)
+    authorize(db, user, 'project.member.manage', project_id)
     item = db.get(ProjectMember, member_id)
-    if not item or item.project_id != project_id: raise HTTPException(404, '项目成员不存在')
+    if not item or item.project_id != project_id:
+        raise HTTPException(404, '项目成员不存在')
+    assignable_role(db, payload.role_id)
+    ensure_member_editable(user, item)
+    ensure_project_admin_retained(db, project_id, item, payload.role_id)
     item.role_id = payload.role_id
     audit(db, user, 'MEMBER_ROLE_UPDATE', 'project', project_id, {'member_id': member_id})
     commit(db)
     return {'message': '成员角色已更新'}
 
+
 @router.delete('/projects/{project_id}/members/{member_id}', summary='将成员移出项目')
 def remove_member(project_id: str, member_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.member.edit', project_id)
+    authorize(db, user, 'project.member.manage', project_id)
     item = db.get(ProjectMember, member_id)
-    if not item or item.project_id != project_id: raise HTTPException(404, '项目成员不存在')
+    if not item or item.project_id != project_id:
+        raise HTTPException(404, '项目成员不存在')
+    ensure_member_editable(user, item)
+    ensure_project_admin_retained(db, project_id, item)
     db.delete(item)
     audit(db, user, 'MEMBER_REMOVE', 'project', project_id, {'member_id': member_id})
     commit(db)
     return {'message': '成员已移出项目'}
 
-@router.get('/roles', summary='查询角色及按钮权限点')
-def roles(db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.role.view')
+
+@router.get('/roles', summary='查询全局角色模板及按钮权限点（项目成员只读）')
+def roles(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_role_read(db, user, project_id)
     return [{'id': x.id, 'name': x.name, 'description': x.description, 'built_in': x.built_in,
              'permissions': [p.code for p in x.permissions]} for x in db.scalars(select(Role)).all()]
 
-@router.get('/permissions', summary='获取全部可配置按钮权限点')
-def all_permissions(db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.role.view')
+
+@router.get('/permissions', summary='获取全部可配置项目权限点（项目成员只读）')
+def all_permissions(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    require_role_read(db, user, project_id)
     return [entity_out(x) for x in db.scalars(select(Permission).order_by(Permission.module, Permission.code)).all()]
 
-@router.post('/roles', status_code=201, summary='新增自定义角色')
+
+@router.post('/roles', status_code=201, summary='新增全局自定义角色（仅系统管理员）')
 def create_role(payload: RoleInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.role.edit')
+    require_superuser(user)
+    if payload.name == '系统管理员':
+        raise HTTPException(409, '系统管理员是保留角色')
     item = Role(name=payload.name, description=payload.description, built_in=False)
     item.permissions = db.scalars(select(Permission).where(Permission.code.in_(payload.permissions))).all()
     db.add(item)
@@ -176,11 +304,15 @@ def create_role(payload: RoleInput, db: Session = Depends(get_db), user: User = 
     commit(db)
     return {'id': item.id, 'name': item.name, 'permissions': [p.code for p in item.permissions]}
 
-@router.put('/roles/{role_id}', summary='编辑角色及按钮权限')
+
+@router.put('/roles/{role_id}', summary='编辑全局角色及按钮权限（仅系统管理员）')
 def update_role(role_id: str, payload: RoleInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.role.edit')
+    require_superuser(user)
     item = db.get(Role, role_id)
-    if not item: raise HTTPException(404, '角色不存在')
+    if not item:
+        raise HTTPException(404, '角色不存在')
+    if item.name == '系统管理员' or payload.name == '系统管理员':
+        raise HTTPException(409, '系统管理员角色不可通过项目角色接口修改')
     item.name = payload.name
     item.description = payload.description
     item.permissions = db.scalars(select(Permission).where(Permission.code.in_(payload.permissions))).all()
@@ -188,13 +320,19 @@ def update_role(role_id: str, payload: RoleInput, db: Session = Depends(get_db),
     commit(db)
     return {'message': '角色权限已保存'}
 
-@router.delete('/roles/{role_id}', summary='删除未被使用的自定义角色')
+
+@router.delete('/roles/{role_id}', summary='删除未被使用的全局自定义角色（仅系统管理员）')
 def delete_role(role_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    authorize(db, user, 'system.role.edit')
+    require_superuser(user)
     item = db.get(Role, role_id)
-    if not item: raise HTTPException(404, '角色不存在')
-    if item.built_in: raise HTTPException(409, '预设角色不可删除')
-    if db.scalar(select(ProjectMember).where(ProjectMember.role_id == role_id)): raise HTTPException(409, '角色仍被项目成员使用')
+    if not item:
+        raise HTTPException(404, '角色不存在')
+    if item.built_in:
+        raise HTTPException(409, '预设角色不可删除')
+    if db.scalar(select(ProjectMember).where(ProjectMember.role_id == role_id)):
+        raise HTTPException(409, '角色仍被项目成员使用')
+    if db.scalar(select(User).where(User.global_role_id == role_id)):
+        raise HTTPException(409, '角色仍被全局统计授权用户使用')
     db.delete(item)
     audit(db, user, 'ROLE_DELETE', 'role', role_id)
     commit(db)

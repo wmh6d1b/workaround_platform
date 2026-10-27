@@ -172,11 +172,10 @@ class SeedConfigurationTests(unittest.TestCase):
         get_settings.cache_clear()
         permissions = [Permission(code=code, module=code.split('.')[0], description=description)
                        for code, description in PERMISSIONS.items()]
-        roles = [SimpleNamespace(id=f'role-{index}', name=name) for index, name in enumerate(('开发人员', '软件经理', '项目管理员', '系统管理员'))]
         db = Mock()
         db.get.side_effect = lambda model, code: next(item for item in permissions if item.code == code)
-        db.scalars.return_value.all.return_value = permissions
-        db.scalar.side_effect = [*roles, SimpleNamespace(id='admin-id'), None]
+        db.scalars.side_effect = [SimpleNamespace(all=lambda: permissions), SimpleNamespace(all=lambda: [])]
+        db.scalar.return_value = SimpleNamespace(id='admin-id')
         with patch.dict(os.environ, {'SEED_DEMO_DATA': 'false'}), patch('app.seed.commit'):
             get_settings.cache_clear()
             seed(db)

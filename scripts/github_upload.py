@@ -13,7 +13,23 @@ import tempfile
 from datetime import datetime
 
 ROOT = Path(__file__).resolve().parents[1]
-TOKEN_ENV = next((os.environ.get(name) for name in ('GITHUB_TOKEN', 'GH_TOKEN') if os.environ.get(name)), None)
+TOKEN_FILE = ROOT / '.secrets/github-token'
+
+
+def load_token():
+    environment_token = next((os.environ.get(name) for name in ('GITHUB_TOKEN', 'GH_TOKEN') if os.environ.get(name)), None)
+    if environment_token:
+        return environment_token
+    if not TOKEN_FILE.exists():
+        return None
+    if TOKEN_FILE.stat().st_mode & 0o077:
+        fail('本地 Token 文件权限过宽，请执行 chmod 600 .secrets/github-token')
+    lines = TOKEN_FILE.read_text().strip().splitlines()
+    if len(lines) != 1 or not lines[0].strip():
+        fail('本地 Token 文件必须且只能包含一行 Token')
+    return lines[0].strip()
+
+
 SECRET_PATTERNS = {
     'GitHub Token': re.compile(rb'(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9]{20,}|ghu_[A-Za-z0-9]{20,})'),
     'Private Key': re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
@@ -27,6 +43,9 @@ def log(message):
 
 def fail(message):
     raise SystemExit(f'[github-upload] 错误：{message}')
+
+
+TOKEN_ENV = load_token()
 
 
 def run(command, *, check=True, capture=False, env=None):
