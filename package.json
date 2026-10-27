@@ -1,0 +1,28 @@
+{
+  "name": "wmp-workaround-platform",
+  "private": true,
+  "version": "1.4.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vue-tsc --noEmit && node scripts/build.mjs",
+    "preview": "node scripts/preview.mjs",
+    "backend:dev": "cd backend && ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
+    "backend:test": "cd backend && ../.venv/bin/python -m unittest discover -s tests -v",
+    "docs:api": ".venv/bin/python backend/scripts/export_openapi.py"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "dayjs": "^1.11.19",
+    "echarts": "^6.0.0",
+    "element-plus": "^2.11.8",
+    "vue": "^3.5.24",
+    "vue-router": "^4.6.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.2",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vue-tsc": "^3.1.5"
+  }
+}

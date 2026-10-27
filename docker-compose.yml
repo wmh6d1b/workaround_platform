@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: wmp
+      POSTGRES_USER: wmp
+      POSTGRES_PASSWORD: wmp
+    ports: ["5432:5432"]
+    volumes: ["wmp-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wmp"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: wmp
+      RUSTFS_SECRET_KEY: wmp-secret
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["wmp-rustfs:/data"]
+volumes:
+  wmp-postgres:
+  wmp-rustfs:
