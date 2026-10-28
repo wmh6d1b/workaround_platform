@@ -50,6 +50,29 @@ class GlobalAuthorizationTests(unittest.TestCase):
             list_business('versions', None, Mock(), user())
         self.assertEqual(raised.exception.status_code, 422)
 
+    def test_superuser_bootstrap_contains_all_projects_without_membership(self):
+        from app.models import Project
+        from app.routers.admin import options
+
+        class Rows:
+            def __init__(self, items):
+                self.items = items
+
+            def all(self):
+                return self.items
+
+            def unique(self):
+                return self
+
+        projects = [Project(id='project-1', name='项目一', code='P1'), Project(id='project-2', name='项目二', code='P2')]
+        admin = SimpleNamespace(id='admin', username='admin', employee_id='E0001', department='系统管理',
+                                email=None, is_superuser=True)
+        db = Mock()
+        db.scalars.side_effect = [Rows(projects), Rows([]), Rows([]), Rows([]), Rows([]), Rows([])]
+        result = options(None, db, admin)
+        self.assertEqual({item['id'] for item in result['projects']}, {'project-1', 'project-2'})
+        self.assertEqual(result['users'][0]['id'], 'admin')
+
 
 class ProjectResourceBoundaryTests(unittest.TestCase):
     @patch('app.routers.admin.commit')
@@ -65,8 +88,9 @@ class ProjectResourceBoundaryTests(unittest.TestCase):
     @patch('app.routers.admin.authorize')
     def test_business_resource_cannot_move_to_another_project(self, authorize):
         db = Mock()
+        from app.models import Project
         item = Version(project_id='project-1', number='V1.0.0')
-        db.get.return_value = item
+        db.get.side_effect = [item, Project(id='project-1', name='项目一', code='P1')]
         with self.assertRaises(HTTPException) as raised:
             update_business('versions', item.id, EntityInput(name='V1.0.1', project_id='project-2'), db, user())
         self.assertEqual(raised.exception.status_code, 403)
@@ -80,6 +104,13 @@ class ProjectMembershipSafetyTests(unittest.TestCase):
         db.get.return_value = Role(name='系统管理员', built_in=True)
         with self.assertRaises(HTTPException) as raised:
             assignable_role(db, 'role-system-admin')
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_initialization_role_is_not_assignable_to_real_projects_or_global_access(self):
+        db = Mock()
+        db.get.return_value = Role(name='初始化用户', built_in=True)
+        with self.assertRaises(HTTPException) as raised:
+            assignable_role(db, 'role-initialization')
         self.assertEqual(raised.exception.status_code, 403)
 
     @patch('app.routers.admin.authorize')

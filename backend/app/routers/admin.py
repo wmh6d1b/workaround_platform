@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from ..db import get_db
-from ..deps import authorize, current_user, require_superuser
+from ..deps import authorize, current_user, ensure_operational_project, require_superuser
+from ..member_import import apply_import, import_template, parse_import_file, validate_import_rows
 from ..models import Machine, Permission, Project, ProjectMember, Role, Subsystem, User, Version
-from ..schemas import EntityInput, GlobalRoleInput, MemberInput, RoleInput, UserInput
+from ..schemas import BulkImportInput, EntityInput, GlobalRoleInput, MemberInput, RoleInput, UserInput
 from ..services import audit, commit
 
 router = APIRouter(tags=['系统管理与基础数据'])
@@ -22,11 +23,12 @@ def entity_out(item) -> dict:
 
 def user_out(item: User) -> dict:
     return {'id': item.id, 'username': item.username, 'employee_id': item.employee_id,
-            'name': item.name, 'email': item.email, 'is_superuser': item.is_superuser}
+            'department': item.department, 'email': item.email, 'is_superuser': item.is_superuser}
 
 
 def directory_user_out(item: User) -> dict:
-    return {'id': item.id, 'username': item.username, 'employee_id': item.employee_id, 'name': item.name}
+    return {'id': item.id, 'username': item.username, 'employee_id': item.employee_id,
+            'department': item.department, 'email': item.email}
 
 
 def require_role_read(db: Session, user: User, project_id: str | None) -> None:
@@ -40,8 +42,8 @@ def assignable_role(db: Session, role_id: str) -> Role:
     role = db.get(Role, role_id)
     if not role:
         raise HTTPException(404, '项目角色不存在')
-    if role.name == '系统管理员':
-        raise HTTPException(403, '系统管理员不是可分配的项目角色')
+    if role.name in {'系统管理员', '初始化用户'}:
+        raise HTTPException(403, f'{role.name}不是可分配的项目角色')
     return role
 
 
@@ -90,7 +92,7 @@ def options(project_id: str | None = None, db: Session = Depends(get_db), user: 
     users = {x.user.id: x.user for x in members}
     if user.is_superuser:
         users[user.id] = user
-    result['users'] = [{'id': x.id, 'name': x.name, 'username': x.username, 'employee_id': x.employee_id, 'email': x.email} for x in users.values()]
+    result['users'] = [{'id': x.id, 'username': x.username, 'employee_id': x.employee_id, 'department': x.department, 'email': x.email} for x in users.values()]
     return result
 
 
@@ -124,6 +126,7 @@ def create_business(resource: str, payload: EntityInput, db: Session = Depends(g
         if not payload.project_id:
             raise HTTPException(422, '必须指定所属项目')
         authorize(db, user, f'{business_permissions[resource]}.edit', payload.project_id)
+        ensure_operational_project(db, payload.project_id)
     values = payload.model_dump(exclude_none=True)
     if resource == 'versions':
         values['number'] = payload.number or payload.name
@@ -150,6 +153,7 @@ def update_business(resource: str, item_id: str, payload: EntityInput, db: Sessi
         require_superuser(user)
     else:
         authorize(db, user, f'{business_permissions[resource]}.edit', item.project_id)
+        ensure_operational_project(db, item.project_id)
         if payload.project_id and payload.project_id != item.project_id:
             raise HTTPException(403, '不允许将业务数据转移到其他项目')
     excluded = {'name'} if resource == 'versions' else set()
@@ -177,13 +181,14 @@ def delete_business(resource: str, item_id: str, db: Session = Depends(get_db), 
         require_superuser(user)
     else:
         authorize(db, user, f'{business_permissions[resource]}.edit', item.project_id)
+        ensure_operational_project(db, item.project_id)
     audit(db, user, 'BUSINESS_DELETE', resource, item.id)
     db.delete(item)
     commit(db)
     return {'message': '删除成功'}
 
 
-@router.get('/users', summary='按姓名、用户名或工号搜索可加入当前项目的平台用户')
+@router.get('/users', summary='按用户名、工号或部门搜索可加入当前项目的平台用户')
 def list_users(q: str | None = None, project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if not user.is_superuser:
         if not project_id:
@@ -191,7 +196,7 @@ def list_users(q: str | None = None, project_id: str | None = None, db: Session 
         authorize(db, user, 'project.member.view', project_id)
     query = select(User).where(User.is_active.is_(True), User.is_superuser.is_(False))
     if q:
-        query = query.where((User.name.ilike(f'%{q}%')) | (User.username.ilike(f'%{q}%')) | (User.employee_id.ilike(f'%{q}%')))
+        query = query.where((User.username.ilike(f'%{q}%')) | (User.employee_id.ilike(f'%{q}%')) | (User.department.ilike(f'%{q}%')))
     return [directory_user_out(x) for x in db.scalars(query).all()]
 
 
@@ -233,7 +238,37 @@ def members(project_id: str, db: Session = Depends(get_db), user: User = Depends
     authorize(db, user, 'project.member.view', project_id)
     rows = db.scalars(select(ProjectMember).where(ProjectMember.project_id == project_id)).all()
     return [{'id': x.id, 'project_id': x.project_id, 'role_id': x.role_id, 'role': x.role.name,
-             'user': {'id': x.user.id, 'name': x.user.name, 'username': x.user.username, 'employee_id': x.user.employee_id, 'email': x.user.email}} for x in rows]
+             'user': {'id': x.user.id, 'username': x.user.username, 'employee_id': x.user.employee_id,
+                      'department': x.user.department, 'email': x.user.email}} for x in rows]
+
+
+@router.get('/projects/{project_id}/members/import-template', summary='下载项目用户批量初始化 Excel 模板')
+def download_import_template(project_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    authorize(db, user, 'project.member.manage', project_id)
+    return Response(content=import_template(), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition': 'attachment; filename=wmp-member-import-template.xlsx'})
+
+
+@router.post('/projects/{project_id}/members/bulk-preview', summary='解析并校验批量初始化文件，返回逐行预览')
+async def preview_import(project_id: str, default_role_id: str = Form(...), file: UploadFile = File(...),
+                         db: Session = Depends(get_db), user: User = Depends(current_user)):
+    authorize(db, user, 'project.member.manage', project_id)
+    content = await file.read(10 * 1024 * 1024 + 1)
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(422, '导入文件不能超过 10 MB')
+    rows = parse_import_file(content, file.filename or '')
+    result = validate_import_rows(db, project_id, default_role_id, rows)
+    return {'summary': result['summary'], 'rows': result['rows']}
+
+
+@router.post('/projects/{project_id}/members/bulk-import', summary='确认批量创建平台用户并初始化当前项目成员')
+def bulk_import(project_id: str, payload: BulkImportInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    authorize(db, user, 'project.member.manage', project_id)
+    result = apply_import(db, project_id, payload.default_role_id, [row.model_dump() for row in payload.rows])
+    summary = result['summary']
+    audit(db, user, 'MEMBER_BULK_IMPORT', 'project', project_id, summary)
+    commit(db)
+    return {'message': '批量初始化完成', **result}
 
 
 @router.post('/projects/{project_id}/members', status_code=201, summary='添加项目成员并分配非全局项目角色')
@@ -295,8 +330,8 @@ def all_permissions(project_id: str | None = None, db: Session = Depends(get_db)
 @router.post('/roles', status_code=201, summary='新增全局自定义角色（仅系统管理员）')
 def create_role(payload: RoleInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
     require_superuser(user)
-    if payload.name == '系统管理员':
-        raise HTTPException(409, '系统管理员是保留角色')
+    if payload.name in {'系统管理员', '初始化用户'}:
+        raise HTTPException(409, f'{payload.name}是保留角色')
     item = Role(name=payload.name, description=payload.description, built_in=False)
     item.permissions = db.scalars(select(Permission).where(Permission.code.in_(payload.permissions))).all()
     db.add(item)
@@ -311,8 +346,8 @@ def update_role(role_id: str, payload: RoleInput, db: Session = Depends(get_db),
     item = db.get(Role, role_id)
     if not item:
         raise HTTPException(404, '角色不存在')
-    if item.name == '系统管理员' or payload.name == '系统管理员':
-        raise HTTPException(409, '系统管理员角色不可通过项目角色接口修改')
+    if item.name in {'系统管理员', '初始化用户'} or payload.name in {'系统管理员', '初始化用户'}:
+        raise HTTPException(409, '系统管理员和初始化用户角色不可通过项目角色接口修改')
     item.name = payload.name
     item.description = payload.description
     item.permissions = db.scalars(select(Permission).where(Permission.code.in_(payload.permissions))).all()

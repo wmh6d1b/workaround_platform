@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     oauth_id_token_algorithm: str = 'RS256'
     oauth_username_claim: str = 'preferred_username'
     oauth_employee_id_claim: str = 'employee_id'
-    oauth_name_claim: str = 'name'
+    oauth_department_claim: str = 'department'
     oauth_email_claim: str = 'email'
     cors_origins: str = 'http://localhost:7100,http://127.0.0.1:7100'
     rustfs_endpoint: str = 'http://localhost:9000'
@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     rustfs_region: str = 'us-east-1'
     presign_expire_seconds: int = 300
     max_attachment_size: int = 500 * 1024 * 1024
+    attachment_session_expire_hours: int = 24
+    attachment_multipart_threshold: int = 64 * 1024 * 1024
+    attachment_multipart_part_size: int = 16 * 1024 * 1024
+    attachment_cleanup_interval_seconds: int = 3600
+    attachment_cleanup_enabled: bool = True
 
     @property
     def origins(self) -> list[str]:

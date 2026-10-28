@@ -1,21 +1,24 @@
 from datetime import datetime
+import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+from ..attachment_service import bind_attachments
 from ..db import get_db
-from ..deps import accessible_project_ids, authorize, current_user
-from ..models import Machine, User, Wkd, WkdHistory, WkdStatus
+from ..deps import accessible_project_ids, authorize, current_user, ensure_operational_project
+from ..models import ExecutionType, Machine, User, Wkd, WkdHistory, WkdStatus
 from ..schemas import CreateWkdInput, TransitionInput
 from ..services import apply_wkd, audit, commit, diff_snapshots, history, next_wkd_number, payload_audit_snapshot, validate_relations, wkd_audit_snapshot, wkd_out
 
 router = APIRouter(prefix='/wkds', tags=['WKD 全生命周期'])
 
-@router.get('', summary='查询 WKD 列表（搜索、标签及机台、子系统、责任人、阶段、状态多选筛选）')
+@router.get('', summary='查询 WKD 列表（搜索、标签及机台、子系统、责任人、执行类型、活动场景、措施类型、阶段、状态多选筛选）')
 def list_wkds(project_id: str | None = None, version_id: str | None = None, machine_id: str | None = None,
               subsystem_id: str | None = None, status: WkdStatus | None = None, q: str | None = None,
               machine_ids: list[str] | None = Query(None), subsystem_ids: list[str] | None = Query(None),
-              owner_ids: list[str] | None = Query(None), stages: list[str] | None = Query(None),
-              statuses: list[WkdStatus] | None = Query(None), tab: str = 'all',
+              owner_ids: list[str] | None = Query(None), execution_types: list[ExecutionType] | None = Query(None),
+              activity_scenes: list[str] | None = Query(None), measure_types: list[str] | None = Query(None),
+              stages: list[str] | None = Query(None), statuses: list[WkdStatus] | None = Query(None), tab: str = 'all',
               page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
               db: Session = Depends(get_db), user: User = Depends(current_user)):
     authorize(db, user, 'wkd.view', project_id)
@@ -35,6 +38,9 @@ def list_wkds(project_id: str | None = None, version_id: str | None = None, mach
     if machine_ids: base = base.where(Wkd.machines.any(Machine.id.in_(machine_ids)))
     if subsystem_ids: base = base.where(Wkd.subsystem_id.in_(subsystem_ids))
     if owner_ids: base = base.where(Wkd.owner_id.in_(owner_ids))
+    if execution_types: base = base.where(Wkd.execution_type.in_(execution_types))
+    if activity_scenes: base = base.where(Wkd.activity_scene.in_(activity_scenes))
+    if measure_types: base = base.where(Wkd.measure_type.in_(measure_types))
     if statuses: base = base.where(Wkd.status.in_(statuses))
     if stages:
         stage_conditions = []
@@ -63,19 +69,30 @@ def eligible_reviewers(db: Session, project_id: str) -> list[User]:
              .join(Role, Role.id == ProjectMember.role_id)
              .join(RolePermission, RolePermission.role_id == Role.id)
              .where(ProjectMember.project_id == project_id, RolePermission.permission_code == 'wkd.review', User.is_active.is_(True))
-             .distinct().order_by(User.name))
+             .distinct().order_by(User.username))
     return list(db.scalars(query).unique().all())
 
-@router.post('', status_code=201, summary='首次创建 WKD，保存完整数据与新建说明')
+@router.post('', status_code=201, summary='首次创建 WKD，幂等绑定已完成草稿附件')
 def create_wkd(payload: CreateWkdInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
     authorize(db, user, 'wkd.create', payload.project_id)
+    ensure_operational_project(db, payload.project_id)
+    creation_hash = hashlib.sha256(payload.model_dump_json(exclude={'idempotency_key'}).encode()).hexdigest()
+    if payload.idempotency_key:
+        existing = db.scalar(select(Wkd).where(Wkd.owner_id == user.id, Wkd.creation_key == payload.idempotency_key))
+        if existing:
+            if existing.creation_hash != creation_hash:
+                raise HTTPException(409, '同一幂等键不能用于不同的创建请求')
+            return wkd_out(existing)
     machines = validate_relations(db, payload)
-    wkd = Wkd(number=next_wkd_number(db), owner_id=user.id, current_handler=user, status=WkdStatus.NEW_WKD)
+    wkd = Wkd(number=next_wkd_number(db), owner_id=user.id, current_handler=user, status=WkdStatus.NEW_WKD,
+        creation_key=payload.idempotency_key, creation_hash=creation_hash)
     apply_wkd(db, wkd, payload, machines)
     db.add(wkd)
     db.flush()
+    linked = bind_attachments(db, user, wkd, payload.attachment_ids)
     history(db, wkd, user, 'CREATE', None, payload.note)
-    audit(db, user, 'WKD_CREATE', 'wkd', wkd.id, {'number': wkd.number})
+    audit(db, user, 'WKD_CREATE', 'wkd', wkd.id, {'number': wkd.number,
+        'attachment_ids': [item.id for item in linked]})
     commit(db)
     return wkd_out(wkd)
 
@@ -85,7 +102,7 @@ def list_reviewers(project_id: str, db: Session = Depends(get_db), user: User = 
         authorize(db, user, 'wkd.submit', project_id)
     except HTTPException:
         authorize(db, user, 'wkd.disable', project_id)
-    return [{'id': item.id, 'name': item.name, 'employee_id': item.employee_id, 'email': item.email} for item in eligible_reviewers(db, project_id)]
+    return [{'id': item.id, 'username': item.username, 'employee_id': item.employee_id, 'department': item.department, 'email': item.email} for item in eligible_reviewers(db, project_id)]
 
 @router.get('/{wkd_id}', summary='获取 WKD 详情、操作编排和字段属性')
 def get_wkd(wkd_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -104,6 +121,7 @@ def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session =
     if not rule: raise HTTPException(409, f'{wkd.status.value} 状态不允许执行 {action}')
     target, permission, note_required = rule
     authorize(db, user, permission, wkd.project_id)
+    ensure_operational_project(db, wkd.project_id)
     handler_bound = {'submit_verify', 'submit_review', 'approve', 'reject', 'disable', 'confirm_disable', 'reject_disable'}
     if action in handler_bound and not user.is_superuser and wkd.current_handler_id != user.id:
         raise HTTPException(403, '仅当前处理人可以执行该流转操作')
@@ -132,7 +150,7 @@ def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session =
         if not next_handler: raise HTTPException(422, '所选用户不是当前项目可指派的软件经理')
 
     previous_handler_id = wkd.current_handler_id
-    previous_handler_name = wkd.current_handler.name if wkd.current_handler else None
+    previous_handler_name = wkd.current_handler.username if wkd.current_handler else None
     if action in ('disable', 'request_disable'):
         wkd.disabled_from = previous
         wkd.disabled_reason = payload.note
@@ -144,7 +162,7 @@ def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session =
     wkd.lock_version += 1
     if previous_handler_id != (next_handler.id if next_handler else None):
         changes.append({'field': 'current_handler', 'label': '当前处理人', 'before': previous_handler_name,
-                        'after': next_handler.name if next_handler else None})
+                        'after': next_handler.username if next_handler else None})
     history(db, wkd, user, action.upper(), previous, payload.note, changes=changes)
     audit(db, user, f'WKD_{action.upper()}', 'wkd', wkd.id, {'current_handler_id': next_handler.id if next_handler else None, 'changes': changes})
     commit(db)
@@ -158,5 +176,5 @@ def get_history(wkd_id: str, db: Session = Depends(get_db), user: User = Depends
     rows = db.scalars(select(WkdHistory).where(WkdHistory.wkd_id == wkd_id).order_by(WkdHistory.created_at.desc())).all()
     return [{'id': x.id, 'action': x.action, 'from_status': x.from_status.value if x.from_status else None,
              'to_status': x.to_status.value, 'note': x.note, 'changes': x.changes or [],
-             'operator': x.operator.name, 'created_at': x.created_at} for x in rows]
+             'operator': x.operator.username, 'created_at': x.created_at} for x in rows]
 

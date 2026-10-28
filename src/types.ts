@@ -40,13 +40,25 @@ export interface Wkd {
 
 export interface Session {
   id?: string
-  username?: string
-  name: string
+  username: string
   employeeId: string
+  department?: string | null
   role: '开发人员' | '软件经理' | '项目管理员' | '系统管理员' | '项目成员'
   isSuperuser?: boolean
   permissions?: string[]
   demo?: boolean
+}
+
+export interface UserOption {
+  id: string
+  username: string
+  employee_id: string
+  department?: string | null
+  email?: string | null
+  global_role_id?: string | null
+  global_role?: string | null
+  role?: string
+  [key: string]: unknown
 }
 
 export interface OptionItem {
@@ -75,7 +87,7 @@ export interface BootstrapOptions {
   versions: OptionItem[]
   machines: OptionItem[]
   subsystems: OptionItem[]
-  users: OptionItem[]
+  users: UserOption[]
   roles: OptionItem[]
 }
 
@@ -101,9 +113,16 @@ export interface AttachmentItem {
   id: string
   filename: string
   size: number
-  content_type?: string
+  content_type?: string | null
+  sha256?: string | null
+  status?: 'UPLOADING' | 'READY'
+  multipart?: boolean
+  upload_session_id?: string | null
   created_at?: string
   url?: string
+  progress?: number
+  busy?: boolean
+  error?: string
 }
 
 export interface ArtifactItem {

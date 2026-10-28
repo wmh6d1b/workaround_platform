@@ -7,11 +7,11 @@ from urllib.parse import parse_qs, urlparse
 from fastapi import HTTPException, Response
 
 from app.config import get_settings
-from app.models import Permission, Project
+from app.models import Permission, Project, ProjectMember, Role, User
 from app.oauth import begin_oauth_login, bind_oauth_user, complete_oauth_login, require_oauth_settings
-from app.routers.auth import oauth_callback, oauth_login
-from app.schemas import OAuthCallbackInput
-from app.seed import PERMISSIONS, seed
+from app.routers.auth import login as local_login, oauth_callback, oauth_login
+from app.schemas import LoginInput, OAuthCallbackInput
+from app.seed import PERMISSIONS, ROLE_CODES, ensure_initialization_membership, seed
 
 OIDC_ENV = {
     'OAUTH_ENABLED': 'true',
@@ -24,9 +24,45 @@ OIDC_ENV = {
 
 def local_user(**changes):
     values = dict(id='user-1', username='zhangsan', employee_id='E1001', oauth_subject=None,
-                  is_superuser=False, is_active=True, name='张三', email=None)
+                  password_hash='stored-hash', is_superuser=False, is_active=True, department=None, email=None)
     values.update(changes)
     return SimpleNamespace(**values)
+
+
+def oauth_claims(**changes):
+    values = dict(sub='subject-1', preferred_username='zhangsan', employee_id='E1001')
+    values.update(changes)
+    return values
+
+
+class LocalLoginTests(unittest.TestCase):
+    def tearDown(self):
+        get_settings.cache_clear()
+
+    def test_production_rejects_non_superuser_local_login(self):
+        db = Mock()
+        db.scalar.return_value = local_user()
+        with patch.dict(os.environ, {'ENVIRONMENT': 'production'}), \
+             patch('app.routers.auth.verify_password', return_value=True), \
+             patch('app.routers.auth.audit') as audit:
+            get_settings.cache_clear()
+            with self.assertRaises(HTTPException) as raised:
+                local_login(LoginInput(username='zhangsan', password='secret'), db)
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertIn('仅系统管理员', raised.exception.detail)
+        audit.assert_not_called()
+        db.commit.assert_not_called()
+
+    def test_production_allows_superuser_local_login(self):
+        db = Mock()
+        db.scalar.return_value = local_user(is_superuser=True)
+        with patch.dict(os.environ, {'ENVIRONMENT': 'production'}), \
+             patch('app.routers.auth.verify_password', return_value=True), \
+             patch('app.routers.auth.audit'), patch('app.routers.auth.token_result', return_value='token'):
+            get_settings.cache_clear()
+            result = local_login(LoginInput(username='admin', password='secret'), db)
+        self.assertEqual(result, 'token')
+        db.commit.assert_called_once_with()
 
 
 class OAuthConfigurationTests(unittest.TestCase):
@@ -119,44 +155,58 @@ class OAuthUserBindingTests(unittest.TestCase):
     def test_existing_oidc_binding_uses_local_identity(self):
         user = local_user(oauth_subject='subject-1')
         self.db.scalar.return_value = user
-        result = bind_oauth_user(self.db, {'sub': 'subject-1', 'name': '张三丰', 'email': 'zhangsan@example.internal'})
+        result = bind_oauth_user(self.db, oauth_claims(department='研发一部', email='zhangsan@example.internal'))
         self.assertIs(result, user)
-        self.assertEqual(user.name, '张三丰')
+        self.assertEqual(user.department, '研发一部')
         self.assertEqual(user.email, 'zhangsan@example.internal')
         self.db.flush.assert_called_once()
 
-    def test_imported_user_is_bound_by_username_without_creating_user(self):
+    def test_imported_user_is_bound_by_employee_id_without_creating_user(self):
         user = local_user()
-        self.db.scalar.side_effect = [None, user, user]
-        result = bind_oauth_user(self.db, {'sub': 'subject-1', 'preferred_username': 'zhangsan', 'employee_id': 'E1001'})
+        self.db.scalar.side_effect = [None, user]
+        result = bind_oauth_user(self.db, oauth_claims())
         self.assertIs(result, user)
         self.assertEqual(user.oauth_subject, 'subject-1')
         self.db.add.assert_not_called()
 
-    def test_unknown_enterprise_user_is_not_auto_registered(self):
-        self.db.scalar.side_effect = [None, None, None]
+    def test_unknown_enterprise_user_is_registered_and_assigned_initialization_project(self):
+        self.db.scalar.side_effect = [None, None]
+        with patch('app.oauth.ensure_initialization_membership') as initialize:
+            result = bind_oauth_user(self.db, oauth_claims(
+                sub='subject-new', preferred_username='lisi', employee_id='E2001',
+                department='研发二部', email='lisi@example.internal'))
+        self.assertIsInstance(result, User)
+        self.assertEqual(result.username, 'lisi')
+        self.assertEqual(result.employee_id, 'E2001')
+        self.assertEqual(result.department, '研发二部')
+        self.assertEqual(result.oauth_subject, 'subject-new')
+        self.assertTrue(result.is_active)
+        self.db.add.assert_called_once_with(result)
+        initialize.assert_called_once_with(self.db, result)
+
+    def test_missing_employee_id_cannot_bind_by_duplicate_username(self):
         with self.assertRaises(HTTPException) as raised:
-            bind_oauth_user(self.db, {'sub': 'unknown', 'preferred_username': 'unknown'})
-        self.assertEqual(raised.exception.status_code, 403)
-        self.db.add.assert_not_called()
+            bind_oauth_user(self.db, oauth_claims(employee_id=''))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.db.scalar.assert_not_called()
 
     def test_superuser_must_use_local_admin_login(self):
         self.db.scalar.return_value = local_user(oauth_subject='admin-subject', is_superuser=True)
         with self.assertRaises(HTTPException) as raised:
-            bind_oauth_user(self.db, {'sub': 'admin-subject'})
+            bind_oauth_user(self.db, oauth_claims(sub='admin-subject'))
         self.assertEqual(raised.exception.status_code, 403)
 
     def test_disabled_user_cannot_login(self):
         self.db.scalar.return_value = local_user(oauth_subject='subject-1', is_active=False)
         with self.assertRaises(HTTPException) as raised:
-            bind_oauth_user(self.db, {'sub': 'subject-1'})
+            bind_oauth_user(self.db, oauth_claims())
         self.assertEqual(raised.exception.status_code, 403)
 
     def test_account_already_bound_to_other_subject_is_rejected(self):
         user = local_user(oauth_subject='other-subject')
-        self.db.scalar.side_effect = [None, user, user]
+        self.db.scalar.side_effect = [None, user]
         with self.assertRaises(HTTPException) as raised:
-            bind_oauth_user(self.db, {'sub': 'subject-1', 'preferred_username': 'zhangsan', 'employee_id': 'E1001'})
+            bind_oauth_user(self.db, oauth_claims())
         self.assertEqual(raised.exception.status_code, 409)
 
 
@@ -167,6 +217,22 @@ class SeedConfigurationTests(unittest.TestCase):
     def test_demo_business_data_is_disabled_by_default(self):
         get_settings.cache_clear()
         self.assertFalse(get_settings().seed_demo_data)
+
+    def test_initialization_role_has_no_business_permissions(self):
+        self.assertEqual(ROLE_CODES['初始化用户'], {'home.view'})
+
+    def test_initialization_project_and_membership_are_created_on_demand(self):
+        db = Mock()
+        db.scalar.side_effect = [None, Role(id='role-init', name='初始化用户'), None]
+        user = User(id='user-new', username='new-user', employee_id='E9001', department='研发部')
+        ensure_initialization_membership(db, user)
+        project, membership = [call.args[0] for call in db.add.call_args_list]
+        self.assertIsInstance(project, Project)
+        self.assertEqual(project.code, 'WMP-USER-INIT')
+        self.assertEqual(project.status, 'INITIALIZING')
+        self.assertIsInstance(membership, ProjectMember)
+        self.assertEqual(membership.user_id, user.id)
+        self.assertEqual(membership.role_id, 'role-init')
 
     def test_empty_database_does_not_create_demo_project_when_disabled(self):
         get_settings.cache_clear()
@@ -181,6 +247,21 @@ class SeedConfigurationTests(unittest.TestCase):
             seed(db)
         added_models = [call.args[0] for call in db.add.call_args_list]
         self.assertFalse(any(isinstance(item, Project) for item in added_models))
+
+    def test_existing_bootstrap_admin_is_repaired_as_active_superuser(self):
+        get_settings.cache_clear()
+        permissions = [Permission(code=code, module=code.split('.')[0], description=description)
+                       for code, description in PERMISSIONS.items()]
+        admin = SimpleNamespace(id='admin-id', is_superuser=False, is_active=False)
+        db = Mock()
+        db.get.side_effect = lambda model, code: next(item for item in permissions if item.code == code)
+        db.scalars.side_effect = [SimpleNamespace(all=lambda: permissions), SimpleNamespace(all=lambda: [])]
+        db.scalar.return_value = admin
+        with patch.dict(os.environ, {'SEED_DEMO_DATA': 'false'}), patch('app.seed.commit'):
+            get_settings.cache_clear()
+            seed(db)
+        self.assertTrue(admin.is_superuser)
+        self.assertTrue(admin.is_active)
 
 
 if __name__ == '__main__':

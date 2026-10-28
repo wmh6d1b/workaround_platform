@@ -3,7 +3,7 @@
   "info": {
     "title": "WMP 规避措施管理平台",
     "description": "WKD 全生命周期、原子操作编排、项目级 RBAC、构建制品和 RustFS 文件接口。除认证与健康检查外，所有接口均需 Bearer Token，并在服务端执行按钮权限校验。",
-    "version": "1.4.0"
+    "version": "1.5.0"
   },
   "paths": {
     "/api/v1/auth/login": {
@@ -71,7 +71,7 @@
         "tags": [
           "认证与用户"
         ],
-        "summary": "校验 OIDC 回调并绑定已导入的 WMP 用户",
+        "summary": "校验 OIDC 回调并绑定或自动注册 WMP 用户",
         "operationId": "oauth_callback_api_v1_auth_oauth_callback_post",
         "requestBody": {
           "content": {
@@ -1085,7 +1085,7 @@
         "tags": [
           "WKD 全生命周期"
         ],
-        "summary": "查询 WKD 列表（搜索、标签及机台、子系统、责任人、阶段、状态多选筛选）",
+        "summary": "查询 WKD 列表（搜索、标签及机台、子系统、责任人、执行类型、活动场景、措施类型、阶段、状态多选筛选）",
         "operationId": "list_wkds_api_v1_wkds_get",
         "security": [
           {
@@ -1247,6 +1247,63 @@
             }
           },
           {
+            "name": "execution_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutionType"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Execution Types"
+            }
+          },
+          {
+            "name": "activity_scenes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Activity Scenes"
+            }
+          },
+          {
+            "name": "measure_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Measure Types"
+            }
+          },
+          {
             "name": "stages",
             "in": "query",
             "required": false,
@@ -1343,7 +1400,7 @@
         "tags": [
           "WKD 全生命周期"
         ],
-        "summary": "首次创建 WKD，保存完整数据与新建说明",
+        "summary": "首次创建 WKD，幂等绑定已完成草稿附件",
         "operationId": "create_wkd_api_v1_wkds_post",
         "security": [
           {
@@ -1844,62 +1901,18 @@
         }
       }
     },
-    "/api/v1/files/upload-url": {
+    "/api/v1/files/upload-sessions": {
       "post": {
         "tags": [
           "附件与 RustFS 存储"
         ],
-        "summary": "鉴权并创建附件预签名上传地址",
-        "operationId": "create_upload_api_v1_files_upload_url_post",
+        "summary": "创建草稿或既有 WKD 附件上传会话",
+        "operationId": "create_upload_session_api_v1_files_upload_sessions_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UploadInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/v1/files/complete": {
-      "post": {
-        "tags": [
-          "附件与 RustFS 存储"
-        ],
-        "summary": "校验 RustFS 文件并保存附件元数据",
-        "operationId": "complete_upload_api_v1_files_complete_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UploadCompleteInput"
+                "$ref": "#/components/schemas/UploadSessionInput"
               }
             }
           },
@@ -1932,12 +1945,352 @@
         ]
       }
     },
+    "/api/v1/files/upload-sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "恢复本人上传会话及附件状态",
+        "operationId": "get_upload_session_api_v1_files_upload_sessions__session_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/upload-sessions/{session_id}/uploads": {
+      "post": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "初始化附件直传或分片上传",
+        "operationId": "start_session_upload_api_v1_files_upload_sessions__session_id__uploads_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionUploadInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/uploads/{attachment_id}/part-url": {
+      "post": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "获取本人附件的单个分片预签名地址",
+        "operationId": "get_upload_part_url_api_v1_files_uploads__attachment_id__part_url_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadPartInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/uploads/{attachment_id}/complete": {
+      "post": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "核验对象并完成本人附件上传",
+        "operationId": "complete_session_upload_api_v1_files_uploads__attachment_id__complete_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionUploadCompleteInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/uploads/{attachment_id}": {
+      "delete": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "取消未绑定附件并清理存储对象",
+        "operationId": "delete_session_upload_api_v1_files_uploads__attachment_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/upload-url": {
+      "post": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "兼容接口：为既有 WKD 创建单次上传地址",
+        "operationId": "create_upload_api_v1_files_upload_url_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/files/complete": {
+      "post": {
+        "tags": [
+          "附件与 RustFS 存储"
+        ],
+        "summary": "兼容接口：完成既有 WKD 单次上传",
+        "operationId": "complete_upload_api_v1_files_complete_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadCompleteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "deprecated": true,
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/files/attachments": {
       "get": {
         "tags": [
           "附件与 RustFS 存储"
         ],
-        "summary": "查询 WKD 附件列表",
+        "summary": "查询 WKD 已完成附件列表",
         "operationId": "attachments_api_v1_files_attachments_get",
         "security": [
           {
@@ -2309,7 +2662,7 @@
         "tags": [
           "系统管理与基础数据"
         ],
-        "summary": "按姓名、用户名或工号搜索可加入当前项目的平台用户",
+        "summary": "按用户名、工号或部门搜索可加入当前项目的平台用户",
         "operationId": "list_users_api_v1_users_get",
         "security": [
           {
@@ -2571,6 +2924,161 @@
         },
         "responses": {
           "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/members/import-template": {
+      "get": {
+        "tags": [
+          "系统管理与基础数据"
+        ],
+        "summary": "下载项目用户批量初始化 Excel 模板",
+        "operationId": "download_import_template_api_v1_projects__project_id__members_import_template_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/members/bulk-preview": {
+      "post": {
+        "tags": [
+          "系统管理与基础数据"
+        ],
+        "summary": "解析并校验批量初始化文件，返回逐行预览",
+        "operationId": "preview_import_api_v1_projects__project_id__members_bulk_preview_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_import_api_v1_projects__project_id__members_bulk_preview_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{project_id}/members/bulk-import": {
+      "post": {
+        "tags": [
+          "系统管理与基础数据"
+        ],
+        "summary": "确认批量创建平台用户并初始化当前项目成员",
+        "operationId": "bulk_import_api_v1_projects__project_id__members_bulk_import_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkImportInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
@@ -2973,6 +3481,25 @@
   },
   "components": {
     "schemas": {
+      "Body_preview_import_api_v1_projects__project_id__members_bulk_preview_post": {
+        "properties": {
+          "default_role_id": {
+            "type": "string",
+            "title": "Default Role Id"
+          },
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default_role_id",
+          "file"
+        ],
+        "title": "Body_preview_import_api_v1_projects__project_id__members_bulk_preview_post"
+      },
       "BuildInput": {
         "properties": {
           "project_id": {
@@ -2999,6 +3526,115 @@
           "wkd_ids"
         ],
         "title": "BuildInput"
+      },
+      "BulkImportInput": {
+        "properties": {
+          "default_role_id": {
+            "type": "string",
+            "title": "Default Role Id"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/BulkImportRowInput"
+            },
+            "type": "array",
+            "maxItems": 5000,
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "default_role_id",
+          "rows"
+        ],
+        "title": "BulkImportInput"
+      },
+      "BulkImportRowInput": {
+        "properties": {
+          "row_number": {
+            "type": "integer",
+            "minimum": 2.0,
+            "title": "Row Number"
+          },
+          "employee_id": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Employee Id"
+          },
+          "username": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Username"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "role_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "row_number",
+          "employee_id",
+          "username"
+        ],
+        "title": "BulkImportRowInput"
+      },
+      "CompletedPart": {
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Part Number"
+          },
+          "etag": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Etag"
+          }
+        },
+        "type": "object",
+        "required": [
+          "part_number",
+          "etag"
+        ],
+        "title": "CompletedPart"
       },
       "CreateWkdInput": {
         "properties": {
@@ -3169,6 +3805,26 @@
               }
             ],
             "title": "Note"
+          },
+          "attachment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Attachment Ids"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{8,64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
           }
         },
         "type": "object",
@@ -3422,6 +4078,65 @@
         ],
         "title": "RoleInput"
       },
+      "SessionUploadCompleteInput": {
+        "properties": {
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-fA-F0-9]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/CompletedPart"
+            },
+            "type": "array",
+            "maxItems": 10000,
+            "title": "Parts"
+          }
+        },
+        "type": "object",
+        "title": "SessionUploadCompleteInput"
+      },
+      "SessionUploadInput": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename"
+          },
+          "size": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Size"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 150
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "size"
+        ],
+        "title": "SessionUploadInput"
+      },
       "Stage": {
         "type": "string",
         "enum": [
@@ -3622,24 +4337,76 @@
         ],
         "title": "UploadInput"
       },
+      "UploadPartInput": {
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Part Number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "part_number"
+        ],
+        "title": "UploadPartInput"
+      },
+      "UploadSessionInput": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "wkd_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wkd Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "UploadSessionInput"
+      },
       "UserInput": {
         "properties": {
           "username": {
             "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
             "title": "Username"
           },
           "employee_id": {
             "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
             "title": "Employee Id"
           },
-          "name": {
-            "type": "string",
-            "title": "Name"
+          "department": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
           },
           "email": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 160
               },
               {
                 "type": "null"
@@ -3651,8 +4418,7 @@
         "type": "object",
         "required": [
           "username",
-          "employee_id",
-          "name"
+          "employee_id"
         ],
         "title": "UserInput"
       },
@@ -3670,9 +4436,16 @@
             "type": "string",
             "title": "Employee Id"
           },
-          "name": {
-            "type": "string",
-            "title": "Name"
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
           },
           "email": {
             "anyOf": [
@@ -3695,7 +4468,7 @@
           "id",
           "username",
           "employee_id",
-          "name",
+          "department",
           "email",
           "is_superuser"
         ],

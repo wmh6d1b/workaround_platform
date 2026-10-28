@@ -50,6 +50,16 @@ class WkdInputTests(unittest.TestCase):
                                 'files': [{'name': 'hello.py', 'content': 'print("hello")'}, {'name': 'world.py', 'content': 'print("world")'}]}}]})
         self.assertEqual(len(result.operations[0].params['files']), 2)
 
+    def test_upload_operation_validates_base64_binary_content(self):
+        data = {**BASE, 'execution_type': ExecutionType.AUTOMATED, 'stage': Stage.POST_START,
+                'operations': [{'type': 'UPLOAD_FILE', 'params': {'target_path': '/root/temp',
+                    'files': [{'name': 'payload.bin', 'content': 'AAECAwQ=', 'encoding': 'base64'}]}}]}
+        result = WkdInput(**data)
+        self.assertEqual(result.operations[0].params['files'][0]['size'], 5)
+        data['operations'][0]['params']['files'][0]['content'] = 'not base64'
+        with self.assertRaises(ValidationError):
+            WkdInput(**data)
+
     def test_upload_operation_rejects_missing_or_unsafe_files(self):
         for files in ([], [{'name': '../hello.py', 'content': 'bad'}], [{'name': 'a.py', 'content': ''}, {'name': 'a.py', 'content': ''}]):
             with self.subTest(files=files), self.assertRaises(ValidationError):

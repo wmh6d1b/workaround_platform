@@ -71,6 +71,19 @@ class ExecutablePackageTests(unittest.TestCase):
             self.assertEqual((sandbox / 'root/temp/hello.py').read_text(), 'print("hello")')
             self.assertEqual((sandbox / 'root/temp/world.py').read_text(), 'print("world")')
 
+    def test_package_preserves_base64_binary_file_bytes(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            wkd = wkd_fixture()
+            wkd['operations'] = wkd['operations'][:1]
+            wkd['operations'][0]['params']['files'] = [
+                {'name': 'payload.bin', 'content': 'AAECAwQ=', 'encoding': 'base64', 'size': 5},
+            ]
+            output = self.build(tmp, wkd)
+            stored = output / 'packages/WKD202610270099/files/01/01/payload.bin'
+            self.assertEqual(stored.read_bytes(), b'\x00\x01\x02\x03\x04')
+            package = json.loads((output / 'packages/WKD202610270099/package.json').read_text())
+            self.assertEqual(package['operations'][0]['params']['files'][0]['size'], 5)
+
     def test_custom_stage_is_entry_parameter_and_wrong_stage_fails(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
             output = self.build(tmp, wkd_fixture(stage='custom', custom_stage_name='after_service_check'))

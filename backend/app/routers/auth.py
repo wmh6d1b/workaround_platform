@@ -41,7 +41,7 @@ def oauth_login(response: Response):
     return {'authorization_url': authorization_url, 'expires_in': 600}
 
 
-@router.post('/oauth/callback', response_model=TokenOut, summary='校验 OIDC 回调并绑定已导入的 WMP 用户')
+@router.post('/oauth/callback', response_model=TokenOut, summary='校验 OIDC 回调并绑定或自动注册 WMP 用户')
 def oauth_callback(payload: OAuthCallbackInput, request: Request, response: Response, db: Session = Depends(get_db)):
     expected_state = request.cookies.get('wmp_oauth_state', '')
     expected_nonce = request.cookies.get('wmp_oauth_nonce', '')

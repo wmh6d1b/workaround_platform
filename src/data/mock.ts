@@ -43,11 +43,11 @@ export const demoOptions: BootstrapOptions = {
     { id: 'demo-subsystem-safety', name: '安全控制', code: 'SAFETY', project_id: 'demo-project', status: 'ENABLED' },
   ],
   users: [
-    { id: 'demo-admin', name: '张明', username: 'admin', employee_id: 'E1024', email: 'zhangming@wmp.local', role: '系统管理员' },
-    { id: 'demo-owner', name: '陈墨', username: 'chenmo', employee_id: 'E1088', email: 'chenmo@wmp.local', role: '开发人员' },
-    { id: 'demo-owner-lin', name: '林舟', username: 'linzhou', employee_id: 'E1102', email: 'linzhou@wmp.local', role: '软件经理' },
-    { id: 'demo-owner-zhou', name: '周然', username: 'zhouran', employee_id: 'E1160', email: 'zhouran@wmp.local', role: '软件经理' },
-    { id: 'demo-owner-zhao', name: '赵一', username: 'zhaoyi', employee_id: 'E1201', email: 'zhaoyi@wmp.local', role: '开发人员' },
+    { id: 'demo-admin', username: 'admin', employee_id: 'E1024', department: '系统管理', email: 'zhangming@wmp.local', role: '系统管理员' },
+    { id: 'demo-owner', username: '陈墨', employee_id: 'E1088', department: '运动控制研发部', email: 'chenmo@wmp.local', role: '开发人员' },
+    { id: 'demo-owner-lin', username: '林舟', employee_id: 'E1102', department: '软件质量部', email: 'linzhou@wmp.local', role: '软件经理' },
+    { id: 'demo-owner-zhou', username: '周然', employee_id: 'E1160', department: '软件质量部', email: 'zhouran@wmp.local', role: '软件经理' },
+    { id: 'demo-owner-zhao', username: '赵一', employee_id: 'E1201', department: '视觉研发部', email: 'zhaoyi@wmp.local', role: '开发人员' },
   ],
   roles: [
     { id: 'demo-role-developer', name: '开发人员', description: '登记、验证 WKD，参与调试构建', built_in: true },

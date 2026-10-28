@@ -3,10 +3,18 @@ import type { BootstrapOptions, Session } from './types'
 import { api, queryString } from './api'
 import { demoOptions } from './data/mock'
 
+// Demo 登录必须同时满足开发服务器和显式环境开关；生产构建始终为 false。
+export const demoLoginEnabled = import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEMO_LOGIN === 'true'
+
 function readSession(): Session | null {
   try {
     const saved = localStorage.getItem('wmp-session')
-    return saved ? JSON.parse(saved) as Session : null
+    if (!saved) return null
+    const session = JSON.parse(saved) as Session & { name?: string }
+    if (!session.username && session.name) session.username = session.name
+    delete session.name
+    if (session.demo && !demoLoginEnabled) return null
+    return session.username ? session : null
   } catch {
     return null
   }
@@ -42,18 +50,35 @@ export function can(permission: string) {
 }
 
 export const isAdmin = computed(() => can('build.release.build'))
+export const isInitializationProject = computed(() => store.options.projects.find(item => item.id === store.projectId)?.code === 'WMP-USER-INIT')
 
 function persistSession() {
   if (store.session) localStorage.setItem('wmp-session', JSON.stringify(store.session))
 }
 
 export function login(session: Session, token?: string) {
+  if (session.demo && !demoLoginEnabled) throw new Error('当前环境未启用 Demo 登录')
   store.session = session
   store.demoMode = session.demo === true
   store.optionsReady = false
   persistSession()
   if (token) localStorage.setItem('wmp-token', token)
   else localStorage.removeItem('wmp-token')
+}
+
+export async function refreshIdentity() {
+  if (store.demoMode || !store.session || !localStorage.getItem('wmp-token')) return
+  const result = await api.get<{ id: string; username: string; employee_id: string; department?: string | null; is_superuser: boolean }>('/auth/me')
+  store.session = {
+    ...store.session,
+    id: result.id,
+    username: result.username,
+    employeeId: result.employee_id,
+    department: result.department,
+    role: result.is_superuser ? '系统管理员' : '项目成员',
+    isSuperuser: result.is_superuser,
+  }
+  persistSession()
 }
 
 export async function refreshPermissions() {

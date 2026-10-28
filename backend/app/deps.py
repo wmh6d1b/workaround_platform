@@ -3,7 +3,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .db import get_db
-from .models import ProjectMember, User
+from .models import Project, ProjectMember, User
 from .security import decode_token
 
 bearer = HTTPBearer(auto_error=False)
@@ -24,6 +24,15 @@ def require_superuser(user: User) -> None:
     """Guard platform-wide operations; project roles must never grant them."""
     if not user.is_superuser:
         raise HTTPException(status.HTTP_403_FORBIDDEN, '仅系统管理员可执行全局管理操作')
+
+
+def ensure_operational_project(db: Session, project_id: str) -> None:
+    """The OAuth landing project must never carry real business data, including for superusers."""
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, '项目不存在')
+    if project.code == 'WMP-USER-INIT':
+        raise HTTPException(status.HTTP_409_CONFLICT, '用户初始化项目仅用于账号落地，请切换到真实项目后再执行此操作')
 
 
 def authorize(db: Session, user: User, permission: str, project_id: str | None = None) -> None:

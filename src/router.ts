@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { can, store } from './store'
+import { can, isInitializationProject, store } from './store'
 import { hasBusinessAccess } from './permissions'
 import { ElMessage } from 'element-plus'
 import AppLayout from './layouts/AppLayout.vue'
@@ -39,6 +39,10 @@ const router = createRouter({
 router.beforeEach((to) => {
   if (!to.meta.public && !store.session) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.name === 'login' && store.session) return { name: 'home' }
+  if (isInitializationProject.value && ['workbench', 'wkd-new', 'wkd-detail', 'debug-build', 'release-build'].includes(String(to.name))) {
+    ElMessage.warning('用户初始化项目仅用于账号落地，请切换到真实项目')
+    return { name: 'home' }
+  }
   let permission = to.meta.permission as string | undefined
   if (to.name === 'system') {
     const tab = String(to.params.tab || 'business')

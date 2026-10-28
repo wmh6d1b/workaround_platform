@@ -26,11 +26,11 @@ onMounted(async () => {
     return
   }
   try {
-    const result = await api.post<{ access_token: string; permissions: string[]; user: { id: string; username: string; name: string; employee_id: string; is_superuser: boolean } }>('/auth/oauth/callback', { code, state })
-    login({ id: result.user.id, username: result.user.username, name: result.user.name, employeeId: result.user.employee_id, role: result.user.is_superuser ? '系统管理员' : '项目成员', isSuperuser: result.user.is_superuser, permissions: result.permissions, demo: false }, result.access_token)
+    const result = await api.post<{ access_token: string; permissions: string[]; user: { id: string; username: string; employee_id: string; department?: string; is_superuser: boolean } }>('/auth/oauth/callback', { code, state })
+    login({ id: result.user.id, username: result.user.username, employeeId: result.user.employee_id, department: result.user.department, role: result.user.is_superuser ? '系统管理员' : '项目成员', isSuperuser: result.user.is_superuser, permissions: result.permissions, demo: false }, result.access_token)
     const redirect = safeRedirect(sessionStorage.getItem('wmp-oauth-redirect'))
     sessionStorage.removeItem('wmp-oauth-redirect')
-    ElMessage.success(`欢迎回来，${result.user.name}`)
+    ElMessage.success(`欢迎回来，${result.user.username}`)
     await router.replace(redirect)
   } catch (reason) {
     error.value = errorMessage(reason, '企业 OAuth 登录失败，请重试')

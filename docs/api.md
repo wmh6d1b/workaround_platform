@@ -1,6 +1,6 @@
 # WMP 接口文档
 
-- 后端版本：`1.4.0`
+- 后端版本：`1.5.0`
 - API 前缀：`/api/v1`
 - Swagger UI：`/docs`
 - ReDoc：`/redoc`
@@ -13,7 +13,7 @@
 
 项目创建、修改、删除，平台用户预创建，全局角色模板增删改和全局审计日志仅允许系统管理员。项目管理员只能维护当前项目的版本、机台、子系统、成员及角色分配，角色模板仅可只读查看。
 
-非系统管理员查询项目内业务数据、平台用户目录、角色和权限时必须传入 `project_id`。业务数据不允许转移到其他项目；系统管理员角色不可作为项目角色分配，项目管理员也不能修改或移除已有系统管理员成员，且项目必须至少保留一名项目管理员。
+非系统管理员查询项目内业务数据、平台用户目录、角色和权限时必须传入 `project_id`。业务数据不允许转移到其他项目；系统管理员和初始化用户角色不可作为项目或全局角色分配，项目管理员也不能修改或移除已有系统管理员成员，且项目必须至少保留一名项目管理员。
 
 ## 通用响应
 
@@ -28,7 +28,7 @@
 |---|---|---|
 | `POST` | `/api/v1/auth/login` | 本地账号登录（开发调试或生产系统管理员） |
 | `POST` | `/api/v1/auth/oauth/login` | 创建企业 OIDC 授权地址并写入防 CSRF 状态 Cookie |
-| `POST` | `/api/v1/auth/oauth/callback` | 校验 OIDC 回调并绑定已导入的 WMP 用户 |
+| `POST` | `/api/v1/auth/oauth/callback` | 校验 OIDC 回调并绑定或自动注册 WMP 用户 |
 | `GET` | `/api/v1/auth/me` | 获取当前用户 |
 | `GET` | `/api/v1/auth/permissions` | 获取当前用户按钮权限点；传项目 ID 时按项目角色计算 |
 | `POST` | `/api/v1/auth/logout` | 退出登录并记录审计 |
@@ -55,8 +55,8 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/v1/wkds` | 查询 WKD 列表（搜索、标签及机台、子系统、责任人、阶段、状态多选筛选） |
-| `POST` | `/api/v1/wkds` | 首次创建 WKD，保存完整数据与新建说明 |
+| `GET` | `/api/v1/wkds` | 查询 WKD 列表（搜索、标签及机台、子系统、责任人、执行类型、活动场景、措施类型、阶段、状态多选筛选） |
+| `POST` | `/api/v1/wkds` | 首次创建 WKD，幂等绑定已完成草稿附件 |
 | `GET` | `/api/v1/wkds/reviewers` | 查询当前项目可指派的软件经理 |
 | `GET` | `/api/v1/wkds/{wkd_id}` | 获取 WKD 详情、操作编排和字段属性 |
 | `POST` | `/api/v1/wkds/{wkd_id}/transitions/{action}` | 状态流转；提交类操作携带完整数据，指派类操作必须传入 manager_id |
@@ -75,9 +75,15 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/api/v1/files/upload-url` | 鉴权并创建附件预签名上传地址 |
-| `POST` | `/api/v1/files/complete` | 校验 RustFS 文件并保存附件元数据 |
-| `GET` | `/api/v1/files/attachments` | 查询 WKD 附件列表 |
+| `POST` | `/api/v1/files/upload-sessions` | 创建草稿或既有 WKD 附件上传会话 |
+| `GET` | `/api/v1/files/upload-sessions/{session_id}` | 恢复本人上传会话及附件状态 |
+| `POST` | `/api/v1/files/upload-sessions/{session_id}/uploads` | 初始化附件直传或分片上传 |
+| `POST` | `/api/v1/files/uploads/{attachment_id}/part-url` | 获取本人附件的单个分片预签名地址 |
+| `POST` | `/api/v1/files/uploads/{attachment_id}/complete` | 核验对象并完成本人附件上传 |
+| `DELETE` | `/api/v1/files/uploads/{attachment_id}` | 取消未绑定附件并清理存储对象 |
+| `POST` | `/api/v1/files/upload-url` | 兼容接口：为既有 WKD 创建单次上传地址 |
+| `POST` | `/api/v1/files/complete` | 兼容接口：完成既有 WKD 单次上传 |
+| `GET` | `/api/v1/files/attachments` | 查询 WKD 已完成附件列表 |
 | `GET` | `/api/v1/files/attachments/{attachment_id}/download` | 鉴权后获取附件预签名下载地址 |
 
 ## 系统管理与基础数据
@@ -89,12 +95,15 @@
 | `POST` | `/api/v1/business/{resource}` | 新增项目、版本、机台或子系统 |
 | `PUT` | `/api/v1/business/{resource}/{item_id}` | 修改业务基础数据 |
 | `DELETE` | `/api/v1/business/{resource}/{item_id}` | 删除未被引用的业务基础数据 |
-| `GET` | `/api/v1/users` | 按姓名、用户名或工号搜索可加入当前项目的平台用户 |
+| `GET` | `/api/v1/users` | 按用户名、工号或部门搜索可加入当前项目的平台用户 |
 | `POST` | `/api/v1/users` | 预创建本地用户（仅系统管理员，不自动分配项目权限） |
 | `GET` | `/api/v1/global-access/users` | 查询平台用户的所有项目角色授权（仅系统管理员） |
 | `PUT` | `/api/v1/users/{user_id}/global-role` | 授予或撤销用户的所有项目角色（仅系统管理员） |
 | `GET` | `/api/v1/projects/{project_id}/members` | 查询项目成员及项目角色 |
 | `POST` | `/api/v1/projects/{project_id}/members` | 添加项目成员并分配非全局项目角色 |
+| `GET` | `/api/v1/projects/{project_id}/members/import-template` | 下载项目用户批量初始化 Excel 模板 |
+| `POST` | `/api/v1/projects/{project_id}/members/bulk-preview` | 解析并校验批量初始化文件，返回逐行预览 |
+| `POST` | `/api/v1/projects/{project_id}/members/bulk-import` | 确认批量创建平台用户并初始化当前项目成员 |
 | `PUT` | `/api/v1/projects/{project_id}/members/{member_id}` | 调整成员在当前项目中的角色 |
 | `DELETE` | `/api/v1/projects/{project_id}/members/{member_id}` | 将成员移出项目 |
 | `GET` | `/api/v1/roles` | 查询全局角色模板及按钮权限点（项目成员只读） |
@@ -123,13 +132,27 @@
 
 `POST /api/v1/auth/oauth/login` 返回企业授权地址，并通过 HttpOnly、SameSite=Lax Cookie 保存有时效的 State 和 Nonce。浏览器跳转企业 IdP 后，前端回调页将 `code`、`state` 提交到 `POST /api/v1/auth/oauth/callback`。
 
-后端校验 State、Nonce、ID Token 签名、Issuer、Audience 和有效期，再将 OIDC `sub` 绑定到已导入的 WMP 用户。未知用户不自动注册；系统管理员不能通过 OAuth 登录；普通用户登录后仍按 WMP 项目角色和按钮权限点鉴权。
+后端校验 State、Nonce、ID Token 签名、Issuer、Audience 和有效期。已导入用户首次只按工号绑定 OIDC `sub`，后续按 `sub` 识别；用户名允许重复，缺少工号时不能按用户名绑定。未注册的企业用户会自动创建平台账号，并加入“用户初始化”占位项目。该项目的内置“初始化用户”角色仅有 `home.view`，不能用于实际业务，也不能通过普通授权接口分配或修改。真实项目权限由项目管理员后续分配；系统管理员不能通过 OAuth 登录。
 
 OIDC 通过 `OAUTH_*` 环境变量配置。生产回调必须使用 HTTPS，测试和生产应使用独立 IdP Client。
 
+## 项目成员批量初始化
+
+`GET /api/v1/projects/{project_id}/members/import-template` 下载五列 Excel 模板：工号（必填、唯一）、用户名（必填、允许重复）、所属部门（选填）、项目角色（选填）、邮箱（选填）。`POST /api/v1/projects/{project_id}/members/bulk-preview` 以 multipart 上传 `default_role_id` 和 `.xlsx/.csv` 文件，返回汇总及逐行错误；单次最多 5000 行、文件最大 10 MB。
+
+全部行无错误后，前端将预览数据提交到 `POST /api/v1/projects/{project_id}/members/bulk-import`。确认接口会重新鉴权和逐行校验，不信任预览结果；已有项目成员保留原角色，已有平台用户仅新增成员关系，新用户按工号创建。三个接口均要求目标项目的 `project.member.manage` 权限，系统管理员和初始化用户角色不可通过导入分配。
+
+## 草稿附件与分片上传
+
+新建 WKD 前，先调用 `POST /api/v1/files/upload-sessions` 创建当前项目的上传会话，再通过会话初始化附件。小于 64 MB 默认单次直传，达到阈值后按 16 MB 分片；分片地址逐片申请，完成后由后端核验 RustFS 对象和大小并保存 SHA-256。
+
+草稿附件仅上传人可恢复、下载、取消和绑定。创建 WKD 时通过 `attachment_ids` 显式选择已完成附件，并携带 `idempotency_key` 防止重试重复创建。跨项目、他人、未绑定状态不正确或已过期的附件都会被拒绝。
+
+上传会话默认 24 小时过期，后端每小时清理过期未绑定附件和分片。`/files/upload-url` 与 `/files/complete` 仅作为既有 WKD 的兼容接口保留，不再接受未关联 WKD 的上传。
+
 ## 保存与提交边界
 
-首次创建使用 `POST /api/v1/wkds`。创建后的普通“保存”仅是浏览器本地草稿，不调用后端，也不产生后端历史。只有状态流转才正式提交数据。
+首次创建使用 `POST /api/v1/wkds`，可同时携带 `attachment_ids` 与 `idempotency_key`。创建后的普通“保存”仅是浏览器本地草稿，不调用后端，也不产生后端历史。只有状态流转才正式提交数据。
 
 `submit_verify`、`submit_review` 的请求体必须同时携带 `data`（完整 WKD 字段和原子操作）、`note`、`lock_version`；`submit_review` 还必须携带 `manager_id`。后端在同一事务中校验并写入业务数据、处理人、状态历史和属性差异。
 
@@ -166,6 +189,6 @@ NEW_WKD --提交自验证--> VERIFY --提交审核--> REVIEW
 
 ## 原子操作与构建制品
 
-`UPLOAD_FILE` 的 `params.files` 至少包含一个文件，支持同一操作上传多个文件；每项包含 `name` 与 `content`，公共参数为 `target_path`、`overwrite`、`permission`。`LINUX_COMMAND` 不包含环境变量参数。
+`UPLOAD_FILE` 的 `params.files` 至少包含一个文件，页面通过 Upload 组件从本地多选实际文件，不再手工填写文件名或内容。每项包含 `name`、`content` 和 `size`；新选择文件使用 `encoding=base64` 保存原始字节，兼容无 `encoding` 的 UTF-8 文本历史数据。单文件上限 20 MB，同一操作内文件名不可重复，公共参数为 `target_path`、`overwrite`、`permission`。`LINUX_COMMAND` 不包含环境变量参数。
 
 调试构建与正式构建返回真实 `tar.gz` 制品，包含通用入口 `wmp_entry.py`、`MANIFEST.json`、`WKD_LIST.json` 和 `packages/<WKD编号>/` 下的执行清单及实际上传文件。目标机使用 `python3 wmp_entry.py <WKD编号> <阶段参数>` 执行；入口仅依赖 Python 标准库，操作失败返回非零退出码。

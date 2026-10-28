@@ -4,12 +4,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import PageHeader from '../components/PageHeader.vue'
 import WkdTable from '../components/WkdTable.vue'
+import WkdColumnSettings from '../components/WkdColumnSettings.vue'
 import { artifacts as demoArtifacts, wkdList } from '../data/mock'
 import { can, ensureOptions, store } from '../store'
 import { api, errorMessage, formatBytes, formatDateTime, normalizeWkd, openDownload, queryString, saveBlob } from '../api'
 import type { ArtifactItem, Wkd } from '../types'
 import { emptyWkdFilters, filterWkdRows, optionsFromWkdRows } from '../utils/wkdFilters'
 import type { WkdFilterKey } from '../utils/wkdFilters'
+import { loadWkdColumns, saveWkdColumns } from '../utils/tablePreferences'
 import { buildDemoExecutablePackage } from '../utils/demoPackage'
 
 const machineId = ref('')
@@ -20,9 +22,11 @@ const loading = ref(false)
 const selected = ref<Wkd[]>([])
 const sourceRows = ref<Wkd[]>([])
 const artifactRows = ref<ArtifactItem[]>([])
+const columnUserId = computed(() => store.session?.id || store.session?.username || 'anonymous')
+const visibleColumns = ref(loadWkdColumns('release-build', columnUserId.value))
 const machineOptions = computed(() => store.options.machines.filter(item => item.project_id === store.projectId))
 const filterOptions = computed(() => optionsFromWkdRows(sourceRows.value))
-const filterableColumns: WkdFilterKey[] = ['subsystem', 'owner', 'stage']
+const filterableColumns: WkdFilterKey[] = ['subsystem', 'owner', 'executionType', 'activityScene', 'measureType', 'stage']
 const rows = computed(() => filterWkdRows(sourceRows.value, search.value, filters.value))
 const machineName = (id: string) => store.options.machines.find(item => item.id === id)?.name || id
 
@@ -84,13 +88,15 @@ onMounted(async () => {
   } catch (error) { ElMessage.error(errorMessage(error, '基础选项加载失败')) }
 })
 watch(() => store.projectId, async () => { machineId.value = machineOptions.value[0]?.id || ''; filters.value=emptyWkdFilters(); await load() })
+watch(visibleColumns, columns => saveWkdColumns('release-build', columnUserId.value, columns), { deep: true })
+watch(columnUserId, userId => { visibleColumns.value = loadWkdColumns('release-build', userId) })
 </script>
 
 <template>
   <div>
     <PageHeader title="正式构建" description="基于审核通过的规避措施生成正式基线制品，确保交付内容一致且可追溯。"><el-tooltip :disabled="can('build.release.build')" content="仅具有正式构建权限的项目角色可执行" placement="bottom"><span><el-button type="primary" :disabled="!can('build.release.build') || !selected.length" :loading="building" @click="build"><el-icon><Lock v-if="!can('build.release.build')" /><Box v-else /></el-icon>正式构建</el-button></span></el-tooltip></PageHeader>
     <div v-if="!can('build.release.build')" class="permission-notice"><el-icon><Lock /></el-icon>当前项目角色仅有查看与下载权限；后端接口会同步校验构建权限。</div>
-    <section class="surface-card release-source"><div class="card-header"><div><h3>构建内容</h3><p>展示当前项目与所选机台下审核通过的 WKD，默认全选</p></div><div class="release-context"><span>{{ store.project }}</span><el-icon><ArrowRight /></el-icon><span>{{ machineName(machineId) }}</span></div></div><div class="filter-bar"><span class="filter-label">目标机台</span><el-select v-model="machineId" filterable style="width:170px" @change="machineChanged"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select><el-input v-model="search" class="search-input" clearable placeholder="搜索审核通过的 WKD 编号或标题" :prefix-icon="Search" /><div class="filter-spacer" /><span class="active-count"><i />已选 {{ selected.length }} / {{ rows.length }} 项</span></div><WkdTable :rows="rows" selectable preselect :loading="loading" :columns="['id','title','machine','subsystem','owner','stage','status']" :filterable="filterableColumns" :filters="filters" :filter-options="filterOptions" @filter-change="headerFilterChanged" @selection="selected = $event" /></section>
+    <section class="surface-card release-source"><div class="card-header"><div><h3>构建内容</h3><p>展示当前项目与所选机台下审核通过的 WKD，默认全选</p></div><div class="release-context"><span>{{ store.project }}</span><el-icon><ArrowRight /></el-icon><span>{{ machineName(machineId) }}</span></div></div><div class="filter-bar"><span class="filter-label">目标机台</span><el-select v-model="machineId" filterable style="width:170px" @change="machineChanged"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select><el-input v-model="search" class="search-input" clearable placeholder="搜索审核通过的 WKD 编号或标题" :prefix-icon="Search" /><div class="filter-spacer" /><WkdColumnSettings v-model="visibleColumns" table-key="release-build" /><span class="active-count"><i />已选 {{ selected.length }} / {{ rows.length }} 项</span></div><WkdTable :rows="rows" selectable preselect :loading="loading" :columns="visibleColumns" :filterable="filterableColumns" :filters="filters" :filter-options="filterOptions" @filter-change="headerFilterChanged" @selection="selected = $event" /></section>
     <section class="surface-card artifact-section"><div class="card-header"><div><h3>基线制品</h3><p>正式构建生成的软件包与校验信息</p></div><el-button text type="primary" :loading="loading" @click="load"><el-icon><Refresh /></el-icon>刷新列表</el-button></div><el-table v-loading="loading" :data="artifactRows" class="data-table"><el-table-column label="制品文件" min-width="310"><template #default="{ row }"><div class="artifact-name"><span><el-icon><Files /></el-icon></span><div><strong class="mono">{{ row.filename }}</strong><small>SHA256 {{ row.sha256.slice(0,8) }}...{{ row.sha256.slice(-4) }}</small></div></div></template></el-table-column><el-table-column label="机台" width="100"><template #default="{row}">{{ machineName(row.machine_id) }}</template></el-table-column><el-table-column label="WKD 数量" width="95" align="center"><template #default="{row}">{{ row.items.length }}</template></el-table-column><el-table-column label="大小" width="90"><template #default="{row}">{{ formatBytes(row.size) }}</template></el-table-column><el-table-column label="构建时间" width="145"><template #default="{row}">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="85" align="right"><template #default="{ row }"><el-button v-if="can('build.release.download')" text type="primary" @click="download(row)"><el-icon><Download /></el-icon>下载</el-button></template></el-table-column></el-table></section>
   </div>
 </template>

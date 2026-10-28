@@ -40,9 +40,9 @@ class ArtifactType(str, enum.Enum):
 class User(Base):
     __tablename__ = 'users'
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(80), index=True)
     employee_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(80))
+    department: Mapped[str | None] = mapped_column(String(120))
     email: Mapped[str | None] = mapped_column(String(160))
     password_hash: Mapped[str | None] = mapped_column(String(256))
     oauth_subject: Mapped[str | None] = mapped_column(String(255), unique=True)
@@ -154,6 +154,8 @@ class Wkd(Base):
     lock_version: Mapped[int] = mapped_column(Integer, default=1)
     disabled_reason: Mapped[str | None] = mapped_column(Text)
     disabled_from: Mapped[WkdStatus | None] = mapped_column(Enum(WkdStatus))
+    creation_key: Mapped[str | None] = mapped_column(String(64))
+    creation_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     project: Mapped[Project] = relationship(lazy='joined')
@@ -199,18 +201,35 @@ class WkdHistory(Base):
     operator: Mapped[User] = relationship(lazy='joined')
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
+class UploadSession(Base):
+    __tablename__ = 'upload_sessions'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    project_id: Mapped[str] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'), index=True)
+    owner_id: Mapped[str] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
+    wkd_id: Mapped[str | None] = mapped_column(ForeignKey('wkds.id', ondelete='CASCADE'), index=True)
+    status: Mapped[str] = mapped_column(String(20), default='OPEN', index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Attachment(Base):
     __tablename__ = 'attachments'
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     wkd_id: Mapped[str | None] = mapped_column(ForeignKey('wkds.id', ondelete='CASCADE'), index=True)
+    upload_session_id: Mapped[str | None] = mapped_column(ForeignKey('upload_sessions.id', ondelete='SET NULL'), index=True)
     object_key: Mapped[str] = mapped_column(String(500), unique=True)
     original_filename: Mapped[str] = mapped_column(String(255))
     size: Mapped[int] = mapped_column(BigInteger)
     content_type: Mapped[str | None] = mapped_column(String(150))
     sha256: Mapped[str | None] = mapped_column(String(64))
     category: Mapped[str] = mapped_column(String(40), default='WKD')
+    status: Mapped[str] = mapped_column(String(20), default='READY', index=True)
+    multipart: Mapped[bool] = mapped_column(Boolean, default=False)
+    storage_upload_id: Mapped[str | None] = mapped_column(String(255))
     uploader_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    session: Mapped[UploadSession | None] = relationship(lazy='joined', foreign_keys=[upload_session_id])
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class BuildArtifact(Base):
     __tablename__ = 'build_artifacts'

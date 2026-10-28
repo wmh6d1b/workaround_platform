@@ -41,7 +41,7 @@ def validate_relations(db: Session, payload) -> list[Machine]:
     return machines
 
 def apply_wkd(db: Session, wkd: Wkd, payload, machines: list[Machine]) -> None:
-    values = payload.model_dump(exclude={'machine_ids', 'operations', 'lock_version', 'owner_id', 'note'})
+    values = payload.model_dump(exclude={'machine_ids', 'operations', 'lock_version', 'owner_id', 'note', 'attachment_ids', 'idempotency_key'})
     for key, value in values.items():
         setattr(wkd, key, value)
     wkd.machines = machines
@@ -58,12 +58,20 @@ OPERATION_LABELS = {'UPLOAD_FILE': '上传文件', 'LINUX_COMMAND': 'Linux 命�
 STAGE_LABELS = {'pre_upgrade': '升级前', 'post_upgrade': '升级后', 'post_start': '启动后', 'post_init': '初始化后', 'custom': '自定义'}
 EXECUTION_LABELS = {'AUTOMATED': '自动化执行', 'MANUAL': '人工操作'}
 
+
+def operation_audit_params(operation_type: str, params: dict) -> str:
+    summary = dict(params)
+    if operation_type == 'UPLOAD_FILE':
+        summary['files'] = [{'name': item.get('name'), 'size': item.get('size')} for item in params.get('files', [])]
+    return '，'.join(f'{key}={value}' for key, value in sorted(summary.items()))
+
+
 def wkd_audit_snapshot(wkd: Wkd) -> dict:
     stage = wkd.stage.value if wkd.stage else None
     execution_type = wkd.execution_type.value if wkd.execution_type else None
     operations = []
     for index, operation in enumerate(wkd.operations, 1):
-        params = '，'.join(f'{key}={value}' for key, value in sorted(operation.params.items()))
+        params = operation_audit_params(operation.type.value, operation.params)
         operations.append(f'{index:02d} {OPERATION_LABELS.get(operation.type.value, operation.type.value)} · {params}')
     return {
         'title': wkd.title, 'description': wkd.description, 'issue_no': wkd.issue_no, 'requirement_no': wkd.requirement_no,
@@ -84,7 +92,7 @@ def payload_audit_snapshot(db: Session, payload, machines: list[Machine]) -> dic
     stage = payload.stage.value if payload.stage else None
     operations = []
     for index, operation in enumerate(payload.operations, 1):
-        params = '，'.join(f'{key}={value}' for key, value in sorted(operation.params.items()))
+        params = operation_audit_params(operation.type, operation.params)
         operations.append(f'{index:02d} {OPERATION_LABELS.get(operation.type, operation.type)} · {params}')
     return {
         'title': payload.title, 'description': payload.description, 'issue_no': payload.issue_no, 'requirement_no': payload.requirement_no,
@@ -128,8 +136,8 @@ def wkd_out(wkd: Wkd) -> dict:
         'found_version_id': wkd.found_version_id, 'found_version': wkd.found_version.number if wkd.found_version else None,
         'planned_version_id': wkd.planned_version_id, 'planned_version': wkd.planned_version.number if wkd.planned_version else None,
         'subsystem_id': wkd.subsystem_id, 'subsystem': wkd.subsystem.name,
-        'owner_id': wkd.owner_id, 'owner': wkd.owner.name,
-        'current_handler_id': wkd.current_handler_id, 'current_handler': wkd.current_handler.name if wkd.current_handler else None,
+        'owner_id': wkd.owner_id, 'owner': wkd.owner.username,
+        'current_handler_id': wkd.current_handler_id, 'current_handler': wkd.current_handler.username if wkd.current_handler else None,
         'machine_ids': [x.id for x in wkd.machines], 'machines': [{'id': x.id, 'name': x.name} for x in wkd.machines],
         'execution_type': wkd.execution_type.value, 'activity_scene': wkd.activity_scene, 'measure_type': wkd.measure_type,
         'remark': wkd.remark, 'status': wkd.status.value, 'stage': wkd.stage.value if wkd.stage else None,

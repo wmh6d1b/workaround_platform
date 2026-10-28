@@ -117,7 +117,7 @@ def statistics_options(db: Session = Depends(get_db), user: User = Depends(curre
                 for item in db.scalars(select(model)).all()]
     return {'projects': rows(Project), 'versions': rows(Version), 'machines': rows(Machine),
             'subsystems': rows(Subsystem), 'roles': [],
-            'users': [{'id': item.id, 'name': item.name, 'username': item.username, 'employee_id': item.employee_id}
+            'users': [{'id': item.id, 'username': item.username, 'employee_id': item.employee_id, 'department': item.department}
                       for item in db.scalars(select(User).where(User.is_active.is_(True))).all()]}
 
 
@@ -155,7 +155,7 @@ def export_statistics(filters: dict = Depends(query_arguments), db: Session = De
     for x in rows:
         writer.writerow([x.number, x.title, x.project.name, x.version.number, x.found_version.number if x.found_version else '',
                          x.planned_version.number if x.planned_version else '', ','.join(m.name for m in x.machines),
-                         x.subsystem.name, x.owner.name, x.current_handler.name if x.current_handler else '', x.execution_type.value,
+                         x.subsystem.name, x.owner.username, x.current_handler.username if x.current_handler else '', x.execution_type.value,
                          x.activity_scene, x.measure_type, x.stage.value if x.stage else '', x.custom_stage_name or '',
                          x.status.value, x.created_at, x.updated_at])
     content = '\ufeff' + output.getvalue()

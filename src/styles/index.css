@@ -156,7 +156,9 @@ a { color: inherit; text-decoration: none; }
 /* 全局可读性：大屏下正文以 14 px 为主，辅助文字不低于 12 px。 */
 body { font-size: 14px; }
 #app small { font-size: 12px !important; line-height: 1.55; }
-#app .brand-copy small, #app .sidebar-caption, #app .release-note small { font-size: 11px !important; }
+#app .brand-copy small, #app .sidebar-caption, #app .release-note small { font-size: 12px !important; }
+/* 最终兜底：辅助文字、标记和局部 scoped 样式均不得低于 12 px，标题与正文规则保持原层级。 */
+#app :where(*:not(svg):not(path)) { font-size: max(12px, 1em); }
 #app .sidebar-menu .el-menu-item, #app .sidebar-menu .el-sub-menu__title { font-size: 14px; }
 #app .release-note strong, #app .collapse-button, #app .context-label,
 #app .global-select .el-select__selected-item, #app .user-meta strong,
@@ -175,9 +177,9 @@ body { font-size: 14px; }
 #app .el-input__inner::placeholder, #app .el-textarea__inner::placeholder { font-size: 14px; }
 #app .filter-label, #app .filter-field label, #app .table-tabs .el-tabs__item,
 #app .dialog-form .el-form-item__label { font-size: 13px; }
-#app .data-table.el-table, #app .data-table .cell, #app .table-link { font-size: 13px !important; }
-#app .data-table .cell { line-height: 21px; }
-#app .table-link.id-link { font-size: 12px !important; }
+#app .data-table.el-table, #app .data-table .cell, #app .table-link { font-size: 14px !important; }
+#app .data-table .cell { line-height: 22px; }
+#app .table-link.id-link { font-size: 13px !important; }
 #app .title-cell small, #app .table-footer > span, #app .tab-count,
 #app .status-tag, #app .metric-card-note, #app .metric-card-value small,
 #app .filter-count, #app .chart-period, #app .detail-table-footer,

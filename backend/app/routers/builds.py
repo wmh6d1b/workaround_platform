@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..db import get_db
-from ..deps import accessible_project_ids, authorize, current_user
+from ..deps import accessible_project_ids, authorize, current_user, ensure_operational_project
 from ..models import ArtifactType, BuildArtifact, BuildArtifactItem, Machine, User, Wkd, WkdStatus
 from ..schemas import BuildInput
 from ..services import artifact_out, audit, commit, wkd_out
@@ -36,6 +36,7 @@ def eligible(kind: str = 'DEBUG', project_id: str | None = None, machine_id: str
 def build(kind: str, payload: BuildInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
     if kind not in ('debug', 'release'): raise HTTPException(404, '未知构建类型')
     authorize(db, user, f'build.{kind}.build', payload.project_id)
+    ensure_operational_project(db, payload.project_id)
     rows = db.scalars(select(Wkd).where(Wkd.id.in_(payload.wkd_ids))).unique().all()
     if len(rows) != len(set(payload.wkd_ids)): raise HTTPException(422, '存在无效 WKD')
     allowed = {WkdStatus.APPROVED} if kind == 'release' else {WkdStatus.VERIFY, WkdStatus.REVIEW, WkdStatus.APPROVED}

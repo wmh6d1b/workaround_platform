@@ -1,3 +1,5 @@
+import base64
+import binascii
 from datetime import datetime
 from pathlib import PurePosixPath
 import re
@@ -35,10 +37,21 @@ class OperationInput(BaseModel):
                 name = str(item.get('name', '')).strip()
                 if not name or name in ('.', '..') or PurePosixPath(name).name != name or '/' in name or '\\' in name:
                     raise ValueError(f'上传文件名不安全：{name or "空文件名"}')
-                if not isinstance(item.get('content', ''), str):
-                    raise ValueError(f'文件 {name} 的内容必须是文本')
+                content = item.get('content', '')
+                if not isinstance(content, str):
+                    raise ValueError(f'文件 {name} 的内容必须是文本或 Base64 字符串')
+                encoding = item.get('encoding')
+                if encoding not in (None, 'base64'):
+                    raise ValueError(f'文件 {name} 使用了不支持的内容编码')
+                try:
+                    raw = base64.b64decode(content, validate=True) if encoding == 'base64' else content.encode('utf-8')
+                except (binascii.Error, ValueError):
+                    raise ValueError(f'文件 {name} 的 Base64 内容无效') from None
+                if len(raw) > 20 * 1024 * 1024:
+                    raise ValueError(f'文件 {name} 超过 20 MB 上限')
                 item['name'] = name
-                item.setdefault('content', '')
+                item['content'] = content
+                item['size'] = len(raw)
                 names.append(name)
             if len(names) != len(set(names)):
                 raise ValueError('同一上传操作内文件名不能重复')
@@ -104,6 +117,8 @@ class WkdInput(BaseModel):
 
 class CreateWkdInput(WkdInput):
     note: str | None = Field(default=None, max_length=10_000_000)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=100)
+    idempotency_key: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{8,64}$')
 
     @field_validator('note')
     @classmethod
@@ -112,6 +127,12 @@ class CreateWkdInput(WkdInput):
             return value
         value = sanitize_rich_text(value)
         return value if rich_text_has_content(value) else None
+
+    @model_validator(mode='after')
+    def validate_attachments(self):
+        if len(self.attachment_ids) != len(set(self.attachment_ids)):
+            raise ValueError('附件列表不能包含重复项')
+        return self
 
 class TransitionInput(BaseModel):
     note: str | None = Field(default=None, max_length=10_000_000)
@@ -164,6 +185,39 @@ class UploadCompleteInput(BaseModel):
     wkd_id: str | None = None
     category: str = 'WKD'
 
+
+class UploadSessionInput(BaseModel):
+    project_id: str
+    wkd_id: str | None = None
+
+
+class SessionUploadInput(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(gt=0)
+    content_type: str | None = Field(default=None, max_length=150)
+
+    @field_validator('filename')
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(ord(char) < 32 for char in value) or '/' in value or '\\' in value:
+            raise ValueError('附件文件名不能为空、包含路径或控制字符')
+        return value
+
+
+class UploadPartInput(BaseModel):
+    part_number: int = Field(ge=1, le=10_000)
+
+
+class CompletedPart(BaseModel):
+    part_number: int = Field(ge=1, le=10_000)
+    etag: str = Field(min_length=1, max_length=255)
+
+
+class SessionUploadCompleteInput(BaseModel):
+    sha256: str | None = Field(default=None, pattern=r'^[a-fA-F0-9]{64}$')
+    parts: list[CompletedPart] = Field(default_factory=list, max_length=10_000)
+
 class EntityInput(BaseModel):
     name: str
     code: str | None = None
@@ -175,15 +229,40 @@ class EntityInput(BaseModel):
     location: str | None = None
     baseline_date: str | None = None
 
+class UserInput(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    employee_id: str = Field(min_length=1, max_length=40)
+    department: str | None = Field(default=None, max_length=120)
+    email: str | None = Field(default=None, max_length=160)
+
+    @field_validator('username', 'employee_id', 'department', 'email', mode='before')
+    @classmethod
+    def trim_user_fields(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class BulkImportRowInput(BaseModel):
+    row_number: int = Field(ge=2)
+    employee_id: str = Field(min_length=1, max_length=40)
+    username: str = Field(min_length=1, max_length=80)
+    department: str | None = Field(default=None, max_length=120)
+    email: str | None = Field(default=None, max_length=160)
+    role_name: str | None = Field(default=None, max_length=80)
+
+    @field_validator('employee_id', 'username', 'department', 'email', 'role_name', mode='before')
+    @classmethod
+    def trim_import_fields(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class BulkImportInput(BaseModel):
+    default_role_id: str
+    rows: list[BulkImportRowInput] = Field(min_length=1, max_length=5000)
+
+
 class MemberInput(BaseModel):
     user_id: str
     role_id: str
-
-class UserInput(BaseModel):
-    username: str
-    employee_id: str
-    name: str
-    email: str | None = None
 
 class RoleInput(BaseModel):
     name: str
@@ -200,7 +279,7 @@ class UserOut(ApiModel):
     id: str
     username: str
     employee_id: str
-    name: str
+    department: str | None
     email: str | None
     is_superuser: bool
 

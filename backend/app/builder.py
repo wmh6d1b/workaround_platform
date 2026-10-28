@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import json
@@ -43,7 +44,8 @@ def build_executable_package(*, artifact_id: str, kind: str, project_id: str, ma
                     stored_files = []
                     for file_index, item in enumerate(params.get('files') or [], 1):
                         filename = item['name']
-                        content = str(item.get('content', '')).encode('utf-8')
+                        content = (base64.b64decode(item.get('content', ''), validate=True)
+                                   if item.get('encoding') == 'base64' else str(item.get('content', '')).encode('utf-8'))
                         stored_path = f'files/{operation["position"]:02d}/{file_index:02d}/{filename}'
                         _add_bytes(tar, f'{package_dir}/{stored_path}', content)
                         stored_files.append({'name': filename, 'stored_path': stored_path,

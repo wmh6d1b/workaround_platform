@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .models import User
+from .seed import ensure_initialization_membership
 
 
 def require_oauth_settings():
@@ -140,34 +141,36 @@ def bind_oauth_user(db: Session, claims: dict) -> User:
     subject = _claim(claims, 'sub')
     if not subject:
         raise HTTPException(401, '企业 OIDC 用户信息缺少 sub')
+    username = _claim(claims, settings.oauth_username_claim, ('preferred_username', 'upn', 'email'))
+    employee_id = _claim(claims, settings.oauth_employee_id_claim, ('employee_id', 'employee_number'))
+    department = _claim(claims, settings.oauth_department_claim, ('department', 'dept'))
+    email = _claim(claims, settings.oauth_email_claim, ('email',))
+    if not username or not employee_id:
+        raise HTTPException(422, '企业 OIDC 必须返回用户名和工号，请检查 Claim 配置；不能仅按用户名绑定用户')
+    for label, value, limit in [('sub', subject, 255), ('用户名', username, 80), ('工号', employee_id, 40),
+                                ('所属部门', department, 120), ('邮箱', email, 160)]:
+        if len(value) > limit:
+            raise HTTPException(422, f'企业 OIDC 返回的{label}超过 {limit} 个字符')
     user = db.scalar(select(User).where(User.oauth_subject == subject))
     if not user:
-        username = _claim(claims, settings.oauth_username_claim, ('preferred_username', 'upn', 'email'))
-        employee_id = _claim(claims, settings.oauth_employee_id_claim, ('employee_id', 'employee_number')) or username
-        if not username:
-            raise HTTPException(422, '企业 OIDC 未返回可映射的用户名，请检查 Claim 配置')
-        matches = list(filter(None, [
-            db.scalar(select(User).where(User.username == username)),
-            db.scalar(select(User).where(User.employee_id == employee_id)) if employee_id else None,
-        ]))
-        unique_matches = {item.id: item for item in matches}
-        if len(unique_matches) > 1:
-            raise HTTPException(409, '企业 OIDC 用户同时匹配多个本地账号，请联系管理员处理')
-        user = matches[0] if matches else None
+        user = db.scalar(select(User).where(User.employee_id == employee_id))
         if user and user.oauth_subject and user.oauth_subject != subject:
             raise HTTPException(409, '本地账号已绑定其他企业身份')
         if user:
             user.oauth_subject = subject
-    if not user:
-        raise HTTPException(403, '企业身份验证成功，但该用户尚未导入 WMP，请联系项目管理员')
+        else:
+            user = User(username=username, employee_id=employee_id, department=department or None,
+                        email=email or None, oauth_subject=subject, is_active=True, is_superuser=False)
+            db.add(user)
+            db.flush()
+            ensure_initialization_membership(db, user)
     if user.is_superuser:
         raise HTTPException(403, '系统管理员请使用本地管理员账号登录')
     if not user.is_active:
         raise HTTPException(403, '用户已停用，请联系系统管理员')
-    name = _claim(claims, settings.oauth_name_claim, ('name',))
-    email = _claim(claims, settings.oauth_email_claim, ('email',))
-    if name:
-        user.name = name
+    user.username = username
+    if department:
+        user.department = department
     if email:
         user.email = email
     db.flush()

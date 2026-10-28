@@ -1,3 +1,4 @@
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .config import get_settings
@@ -16,11 +17,15 @@ PERMISSIONS = {
     'project.member.view': '查看项目成员', 'project.member.manage': '管理项目成员及角色分配',
     'project.role.view': '查看项目角色权限', 'files.upload': '上传附件', 'files.download': '下载附件',
 }
+INITIALIZATION_ROLE = '初始化用户'
+INITIALIZATION_PROJECT_NAME = '用户初始化'
+INITIALIZATION_PROJECT_CODE = 'WMP-USER-INIT'
 ROLE_CODES = {
     '开发人员': {'home.view','wkd.view','wkd.create','wkd.edit','wkd.submit','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','files.upload','files.download'},
     '软件经理': {'home.view','wkd.view','wkd.edit','wkd.review','wkd.disable','wkd.note','build.debug.view','build.debug.build','build.release.view','build.release.download','files.upload','files.download'},
     '项目管理员': set(PERMISSIONS),
     '系统管理员': set(PERMISSIONS),
+    INITIALIZATION_ROLE: {'home.view'},
 }
 LEGACY_PERMISSION_MAP = {
     'system.business.view': {'business.version.view', 'business.machine.view', 'business.subsystem.view'},
@@ -30,6 +35,22 @@ LEGACY_PERMISSION_MAP = {
     'system.role.view': {'project.role.view'},
     'system.role.edit': set(),
 }
+
+
+def ensure_initialization_membership(db: Session, user: User) -> None:
+    """Give a new enterprise user a harmless landing project, on demand only."""
+    project = db.scalar(select(Project).where(Project.code == INITIALIZATION_PROJECT_CODE))
+    if not project:
+        project = Project(name=INITIALIZATION_PROJECT_NAME, code=INITIALIZATION_PROJECT_CODE, status='INITIALIZING')
+        db.add(project)
+        db.flush()
+    role = db.scalar(select(Role).where(Role.name == INITIALIZATION_ROLE))
+    if not role:
+        raise HTTPException(503, '初始化用户角色尚未就绪，请联系系统管理员')
+    membership = db.scalar(select(ProjectMember).where(
+        ProjectMember.project_id == project.id, ProjectMember.user_id == user.id))
+    if not membership:
+        db.add(ProjectMember(project_id=project.id, user_id=user.id, role_id=role.id))
 
 
 def migrate_legacy_permissions(db: Session, permissions: dict[str, Permission], roles: list[Role]) -> None:
@@ -73,14 +94,23 @@ def seed(db: Session) -> None:
             role = Role(name=name, description=f'WMP 预设角色：{name}', built_in=True)
             role.permissions = [permissions[x] for x in codes]
             db.add(role)
+        if name == INITIALIZATION_ROLE:
+            # This role is a security boundary, not a customizable role template.
+            role.built_in = True
+            role.description = 'WMP 内置初始化角色：仅允许访问首页，不包含实际业务权限'
+            role.permissions = [permissions['home.view']]
         roles[name] = role
     settings = get_settings()
     admin = db.scalar(select(User).where(User.username == settings.bootstrap_admin_username))
     if not admin:
-        admin = User(username=settings.bootstrap_admin_username, employee_id='E0001', name='系统管理员',
+        admin = User(username=settings.bootstrap_admin_username, employee_id='E0001', department='系统管理',
                     password_hash=hash_password(settings.bootstrap_admin_password), is_superuser=True)
         db.add(admin)
         db.flush()
+    else:
+        # 修复旧库中初始化管理员被误存为普通用户或停用的情况；该账号不依赖项目成员关系。
+        admin.is_superuser = True
+        admin.is_active = True
     if settings.seed_demo_data and not db.scalar(select(Project.id).limit(1)):
         project = Project(name='晶圆检测设备', code='WAFER-INSPECT', owner_id=admin.id)
         db.add(project)

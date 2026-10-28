@@ -1,8 +1,8 @@
-# WMP v1.4 部署文档
+# WMP v1.5 部署文档
 
 本文用于将当前工程部署到已具备 PostgreSQL 和 RustFS 的内网 Linux 服务器，分别说明**测试版本**与**生产版本**。示例系统为 Ubuntu/Debian，其他 Linux 发行版请替换对应的软件包安装命令和 systemd、Nginx 配置路径。
 
-> 适用代码版本：WMP v1.4.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
+> 适用代码版本：WMP v1.5.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
 
 ## 1. 架构与部署边界
 
@@ -38,6 +38,7 @@ FastAPI / Uvicorn
 | Uvicorn | 单进程，便于排查 | 多进程，不启用 `--reload` |
 | Swagger | 可对测试人员开放 | 建议仅内网管理员访问或限制来源 |
 | 演示数据 | `SEED_DEMO_DATA=true` 时显式开启 | 必须保持 `SEED_DEMO_DATA=false` |
+| 前端 Demo 登录 | 仅在 `npm run dev` 且 `VITE_ENABLE_DEMO_LOGIN=true` 时开启 | 生产构建始终禁用，不预填账号、不提供角色选择或 Demo 降级 |
 | 密钥 | 使用独立随机密钥，不使用示例默认值 | 独立高强度密钥，纳入受控密钥管理 |
 | 数据安全 | 可重置，重置前仍应备份 | 必须备份、监控、审计并准备回滚方案 |
 
@@ -45,11 +46,12 @@ FastAPI / Uvicorn
 
 ## 3. 当前版本的部署约束
 
-1. **OIDC 只负责身份认证，不自动注册或授权。** 用户必须提前导入 WMP；首次登录可按用户名或工号绑定 OIDC `sub`，后续按 `sub` 识别。未知用户会被拒绝，项目角色和按钮权限仍由 WMP 管理。系统管理员不能通过 OAuth 登录，必须使用本地管理员账号。
+1. **OIDC 负责身份认证，WMP 负责业务授权。** 已导入用户首次登录只按工号绑定 OIDC `sub`，后续按 `sub` 识别；用户名可以重复，不能作为账号绑定依据，IdP 必须返回工号。未注册的企业用户会自动创建 WMP 账号，并加入按需创建的“用户初始化”占位项目。该项目的“初始化用户”角色仅有首页权限，真实项目角色和按钮权限仍由 WMP 项目管理员分配。系统管理员不能通过 OAuth 登录，必须使用本地管理员账号。
 2. **IdP 必须支持标准 OIDC 授权码流程。** 需要提供发现文档、授权/令牌接口、JWKS，并支持 ID Token 的 Issuer、Audience、Nonce 和签名校验。当前令牌认证支持 `client_secret_basic`、`client_secret_post`，默认签名算法为 `RS256`。
 3. **演示业务数据默认关闭。** 权限、预设角色和系统管理员仍会初始化；只有 `SEED_DEMO_DATA=true` 且数据库没有任何项目时，才创建演示项目、版本、机台、子系统和一个已审核通过的 WKD。生产必须保持 `false`。
-4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。生产升级与回滚必须先在测试环境验证；不能假设任意旧代码都能直接回滚到已升级的数据结构。
-5. **管理员密码环境变量主要用于首次初始化。** 管理员已经存在后，仅修改 `BOOTSTRAP_ADMIN_PASSWORD` 不会自动重置其密码。首次启动前就应设置高强度密码，后续使用正式的密码重置流程。
+4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。本次升级会新增用户部门、取消用户名唯一约束并删除旧 `users.name` 列；生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
+5. **管理员密码环境变量主要用于首次初始化。** 管理员已经存在后，仅修改 `BOOTSTRAP_ADMIN_PASSWORD` 不会自动重置其密码。首次启动前就应设置高强度密码。当前版本没有自助修改密码页面或密码重置 API；已有管理员密码需由运维在后端通过受控脚本更新 PostgreSQL 中的 `users.password_hash`，具体方法见 10.5 节。
+6. **项目成员支持 Excel／CSV 批量初始化。** 系统管理员可导入任意项目，项目管理员只能导入具有 `project.member.manage` 权限的项目。页面下载的五列模板为工号、用户名、所属部门、项目角色、邮箱；工号和用户名必填，其他字段选填，角色为空时使用页面默认角色。单次最多 5000 行，必须先校验预览，全部无错误后才能确认；已有成员保留原角色。
 
 ## 4. 部署前检查清单
 
@@ -94,17 +96,17 @@ tar \
   --exclude='./artifacts' \
   --exclude='./backend/.env' \
   --exclude='*.log' \
-  -czf /tmp/wmp-v1.4.0.tar.gz .
+  -czf /tmp/wmp-v1.5.0.tar.gz .
 ```
 
 计算校验值并传到目标服务器：
 
 ```bash
-shasum -a 256 /tmp/wmp-v1.4.0.tar.gz
-scp /tmp/wmp-v1.4.0.tar.gz <用户>@<服务器>:/tmp/
+shasum -a 256 /tmp/wmp-v1.5.0.tar.gz
+scp /tmp/wmp-v1.5.0.tar.gz <用户>@<服务器>:/tmp/
 ```
 
-服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.4.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
+服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.5.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
 
 ## 6. 初始化 PostgreSQL 与 RustFS
 
@@ -138,8 +140,10 @@ CREATE DATABASE wmp_prod OWNER wmp_prod;
 - AllowedOrigins：测试为 `http://10.10.0.20:8080`；生产为 `https://wmp.example.internal`。
 - AllowedMethods：`GET`、`PUT`。
 - AllowedHeaders：至少包含 `Content-Type`，可按 RustFS 配置方式允许必要的签名请求头。
-- ExposeHeaders：建议包含 `ETag`。
+- ExposeHeaders：必须包含 `ETag`，否则浏览器无法提交 Multipart 分片完成信息。
 - 不要在生产配置无关的 `*` 来源。
+
+应用每 24 小时使草稿上传会话过期，并默认每小时清理过期未绑定附件和未完成分片。还应在 RustFS Bucket 配置 `attachments/` 前缀的未完成 Multipart 生命周期清理，作为应用清理任务不可用时的兜底；不要对已绑定的正式附件配置自动过期删除。
 
 应用不在数据库中保存附件或制品二进制，只保存 Object Key 和元数据。备份必须同时覆盖 PostgreSQL 与 RustFS，并保证恢复时间点一致。
 
@@ -150,7 +154,7 @@ CREATE DATABASE wmp_prod OWNER wmp_prod;
 ```bash
 sudo useradd --system --home /opt/wmp-test --shell /usr/sbin/nologin wmptest
 sudo mkdir -p /opt/wmp-test/app
-sudo tar -xzf /tmp/wmp-v1.4.0.tar.gz -C /opt/wmp-test/app
+sudo tar -xzf /tmp/wmp-v1.5.0.tar.gz -C /opt/wmp-test/app
 sudo chown -R wmptest:wmptest /opt/wmp-test
 
 sudo apt-get update
@@ -198,6 +202,11 @@ RUSTFS_BUCKET=wmp-test
 RUSTFS_REGION=us-east-1
 PRESIGN_EXPIRE_SECONDS=300
 MAX_ATTACHMENT_SIZE=524288000
+ATTACHMENT_SESSION_EXPIRE_HOURS=24
+ATTACHMENT_MULTIPART_THRESHOLD=67108864
+ATTACHMENT_MULTIPART_PART_SIZE=16777216
+ATTACHMENT_CLEANUP_INTERVAL_SECONDS=3600
+ATTACHMENT_CLEANUP_ENABLED=true
 ```
 
 可用 `openssl rand -hex 32` 生成 JWT 随机值。不要把 `.env` 打包回代码或提交到 Git。
@@ -295,7 +304,7 @@ curl --fail http://127.0.0.1:8080/openapi.json -o /tmp/wmp-test-openapi.json
 ### 8.1 先完成上线门禁
 
 - 已在测试 IdP 完成 OIDC 授权码、State/Nonce、签名、用户绑定和权限验证。
-- 已导入初始化用户，OAuth 用户仅用于身份验证，项目角色和权限仍由 WMP 管理。
+- 已验证新企业用户可以自动注册并进入“用户初始化”项目，且没有实际业务权限；真实项目角色和权限仍由 WMP 管理。
 - 仅保留一个最高权限系统管理员；其他用户不得设置 `is_superuser=true`。
 - 生产 `SEED_DEMO_DATA=false`，不会写入演示项目或演示 WKD。
 - 已使用独立生产数据库、Bucket、OIDC Client、密钥、管理员密码和 HTTPS 证书。
@@ -309,7 +318,7 @@ curl --fail http://127.0.0.1:8080/openapi.json -o /tmp/wmp-test-openapi.json
 ```bash
 sudo useradd --system --home /opt/wmp --shell /usr/sbin/nologin wmp
 sudo mkdir -p /opt/wmp/app
-sudo tar -xzf /tmp/wmp-v1.4.0.tar.gz -C /opt/wmp/app
+sudo tar -xzf /tmp/wmp-v1.5.0.tar.gz -C /opt/wmp/app
 sudo chown -R wmp:wmp /opt/wmp
 cd /opt/wmp/app
 python3 -m venv .venv
@@ -321,7 +330,7 @@ cp backend/.env.example backend/.env
 chmod 600 backend/.env
 ```
 
-前端默认请求同源 `/api/v1`，生产不需要设置 `VITE_API_BASE`。只有前后端确实分离域名时才在构建前配置它，并同步修改 CORS、TLS 和 Nginx；推荐保持本文的同源部署方式。
+前端默认请求同源 `/api/v1`，生产不需要设置 `VITE_API_BASE`。只有前后端确实分离域名时才在构建前配置它，并同步修改 CORS、TLS 和 Nginx；推荐保持本文的同源部署方式。生产登录页只提供空白的用户名、密码输入框、本地登录按钮和企业 OAuth 按钮；`npm run build` 始终禁用 Demo 登录与 Demo 会话，即使误设 `VITE_ENABLE_DEMO_LOGIN=true` 也不会生效。后端不可用时只显示登录错误，绝不自动降级为演示管理员。
 
 ### 8.3 配置生产环境
 
@@ -345,7 +354,7 @@ OAUTH_TOKEN_AUTH_METHOD=client_secret_basic
 OAUTH_ID_TOKEN_ALGORITHM=RS256
 OAUTH_USERNAME_CLAIM=preferred_username
 OAUTH_EMPLOYEE_ID_CLAIM=employee_id
-OAUTH_NAME_CLAIM=name
+OAUTH_DEPARTMENT_CLAIM=department
 OAUTH_EMAIL_CLAIM=email
 CORS_ORIGINS=https://wmp.example.internal
 RUSTFS_ENDPOINT=https://rustfs.example.internal
@@ -355,6 +364,11 @@ RUSTFS_BUCKET=wmp-prod
 RUSTFS_REGION=us-east-1
 PRESIGN_EXPIRE_SECONDS=300
 MAX_ATTACHMENT_SIZE=524288000
+ATTACHMENT_SESSION_EXPIRE_HOURS=24
+ATTACHMENT_MULTIPART_THRESHOLD=67108864
+ATTACHMENT_MULTIPART_PART_SIZE=16777216
+ATTACHMENT_CLEANUP_INTERVAL_SECONDS=3600
+ATTACHMENT_CLEANUP_ENABLED=true
 ```
 
 在企业 IdP 注册 WMP 客户端时：
@@ -362,7 +376,7 @@ MAX_ATTACHMENT_SIZE=524288000
 1. 应用类型选择服务端 Web 应用，授权类型选择 Authorization Code，不启用 Implicit。
 2. 回调地址必须逐字配置为 `https://wmp.example.internal/oauth/callback`，与 `OAUTH_REDIRECT_URI` 完全一致。
 3. 确认 `https://idp.example.internal/.well-known/openid-configuration` 可从后端访问，且返回的 `issuer` 与 `OAUTH_ISSUER_URL` 一致。
-4. 确认 ID Token 包含 `sub`、`nonce`、`name` 以及映射用户名/工号的 Claim；如果 IdP 使用不同 Claim 名称，修改 `OAUTH_USERNAME_CLAIM`、`OAUTH_EMPLOYEE_ID_CLAIM` 等配置。
+4. 确认 ID Token 或 UserInfo 包含 `sub`、`nonce` 以及映射用户名、工号、部门、邮箱的 Claim；其中用户名和工号必须存在。如果 IdP 使用不同 Claim 名称，修改 `OAUTH_USERNAME_CLAIM`、`OAUTH_EMPLOYEE_ID_CLAIM`、`OAUTH_DEPARTMENT_CLAIM`、`OAUTH_EMAIL_CLAIM`。
 5. 如果令牌接口使用请求体传递密钥，将 `OAUTH_TOKEN_AUTH_METHOD` 改为 `client_secret_post`；签名算法必须改为 IdP 实际使用且允许的算法，不能通过关闭验签兼容。
 6. 后端需要访问 IdP 的发现、令牌、JWKS 和 UserInfo 地址；用户浏览器需要访问 IdP 授权登录页。生产回调必须使用 HTTPS。
 7. 测试 OIDC 时，在测试 `.env` 使用独立的测试 IdP Client 和测试回调 `http://10.10.0.20:8080/oauth/callback`，并保持测试与生产用户库隔离。
@@ -478,20 +492,22 @@ curl --fail https://wmp.example.internal/health
 
 1. 访问应用地址，确认不是 Demo 模式。
 2. 使用系统管理员登录，检查首页、项目、版本、机台、子系统、角色和成员。
-3. 检查初始化用户已导入、账号启用、项目角色分配正确。
-4. 用非授权账号验证按钮不可用时，服务端同样返回 `403`，不能只检查前端按钮隐藏。
-5. 生产环境确认普通本地账号不能绕过 OAuth 登录。
-6. 检查 `/openapi.json`、`/docs`；生产确认接口文档仅管理员网段可访问。
+3. 使用一个未注册的企业账号完成 OAuth 登录，确认账号自动创建、加入“用户初始化”项目，且不能新建 WKD、上传附件、构建或维护业务数据；再用成员管理将其分配到真实项目并核对角色。
+4. 在成员管理下载五列模板，先用包含重复工号或无效角色的文件确认逐行错误会阻止导入，再用正确文件完成预览和确认；重复导入时已有成员保留原角色，不生成重复用户或成员，并用项目管理员账号验证不能导入无权限项目。
+5. 用非授权账号验证按钮不可用时，服务端同样返回 `403`，不能只检查前端按钮隐藏。
+6. 生产环境确认普通本地账号不能绕过 OAuth 登录。
+7. 检查 `/openapi.json`、`/docs`；生产确认接口文档仅管理员网段可访问。
 
 > Swagger UI 和 ReDoc 的默认前端资源可能来自公共 CDN。完全隔离互联网的内网中，`openapi.json` 和接口调用不受影响，但文档页面样式/脚本可能需要额外做本地静态化；不要将“Swagger 页面打不开”误判为后端接口失败。
 
 ### 9.2 WKD 与附件
 
 1. 新建 WKD，确认项目、所属版本来自全局上下文，责任人固定为当前用户。
-2. 验证问题单号/需求单号、问题发现版本、执行类型和自定义阶段唯一性规则。
-3. 编排一个上传操作中的多个文件，再编排 Linux 命令，提交自验证。
-4. 上传两个不同类型附件，刷新后确认列表仍在，下载内容一致。
-5. 检查数据库仅保存 Object Key，RustFS 中存在对应私有对象，匿名 URL 不可直接读取。
+2. 在首次创建前上传两个不同类型附件，刷新页面确认草稿附件恢复；创建后确认附件已绑定，下载内容一致。
+3. 上传一个达到分片阈值的文件，确认失败分片可重试、浏览器能读取 ETag，完成后数据库状态为 `READY` 且保存 SHA-256。
+4. 验证问题单号/需求单号、问题发现版本、执行类型和自定义阶段唯一性规则。
+5. 编排一个上传操作中的多个文件，再编排 Linux 命令，提交自验证。
+6. 检查数据库仅保存 Object Key，RustFS 中存在对应私有对象，匿名 URL 不可直接读取；用另一账号验证不能恢复或绑定他人的草稿附件。
 
 ### 9.3 构建制品
 
@@ -558,6 +574,36 @@ pg_dump -h 10.10.0.40 -U wmp_prod -d wmp_prod -Fc -f /secure-backup/wmp_prod_bef
 - 恢复备份会丢失备份之后的新业务数据，必须先评估并明确变更窗口。
 - 当前未引入 Alembic，任何生产升级都必须先在测试环境验证启动时的自动建表/修改语句。
 
+### 10.5 已有系统管理员密码重置
+
+当前版本没有自助修改密码页面或密码重置 API。确需重置时，由运维在生产后端主机执行以下受控脚本；脚本从终端隐藏读取新密码，不要把密码写进命令参数、shell 历史或文档。操作前应备份数据库并记录运维审计。
+
+```bash
+cd /opt/wmp/app/backend
+../.venv/bin/python - <<'PY'
+from getpass import getpass
+from sqlalchemy import select
+from app.db import SessionLocal
+from app.models import User
+from app.security import hash_password
+
+username = input('管理员用户名：').strip()
+password = getpass('新密码（至少 12 位）：')
+if len(password) < 12 or password != getpass('再次输入新密码：'):
+    raise SystemExit('密码不足 12 位或两次输入不一致，未做任何修改')
+with SessionLocal() as db:
+    admins = list(db.scalars(select(User).where(
+        User.username == username, User.is_superuser.is_(True))))
+    if len(admins) != 1:
+        raise SystemExit('必须且只能匹配一名系统管理员，未做任何修改')
+    admins[0].password_hash = hash_password(password)
+    db.commit()
+print('管理员密码已更新')
+PY
+```
+
+该操作只更新 PostgreSQL 中的 `users.password_hash`，不会撤销已签发的 JWT；如因泄露而重置，还应在计划内轮换 `JWT_SECRET` 并要求重新登录。普通业务用户不通过本地密码维护，应使用企业 OIDC。
+
 ## 11. 常见故障定位
 
 | 现象 | 优先检查 |
@@ -566,22 +612,23 @@ pg_dump -h 10.10.0.40 -U wmp_prod -d wmp_prod -Fc -f /secure-backup/wmp_prod_bef
 | 启动报枚举或表权限错误 | 当前版本启动需要 DDL 权限，检查数据库 owner/权限和已有枚举结构 |
 | 页面能打开但 API 全部失败 | Nginx `/api/` 代理、Uvicorn 状态、`CORS_ORIGINS` 是否与应用源完全一致 |
 | 返回 401 | 令牌过期、JWT 密钥变更、用户停用；生产普通本地账号会被拒绝 |
-| 返回 403 | 用户是否为项目成员、项目角色是否包含对应按钮权限点；OAuth 用户是否已导入且未停用 |
+| 返回 403 | 用户是否为项目成员、项目角色是否包含对应按钮权限点；初始化用户只有首页权限属预期行为；检查账号是否停用 |
 | OAuth 提示 State/Nonce 或令牌校验失败 | 重新从 WMP 登录页发起；检查 IdP 回调、服务器时间、Issuer、Audience、JWKS 和签名算法 |
-| OAuth 提示用户尚未导入 | 先导入用户并核对用户名/工号 Claim；系统不会自动注册未知用户 |
+| OAuth 自动注册失败 | 检查用户名/工号 Claim 是否缺失、超长或与多个本地账号冲突，并确认启动初始化已创建“初始化用户”角色 |
 | OAuth 授权码交换失败 | 检查 Client ID/Secret、令牌认证方式、回调地址、后端到 IdP 网络和 TLS 证书 |
 | 构建成功但浏览器下载失败 | `RUSTFS_ENDPOINT` 是否可被浏览器访问、DNS、TLS、CORS、预签名 URL 是否过期 |
-| 附件直传失败 | RustFS CORS 是否允许应用源的 `PUT` 和 `Content-Type`，对象大小是否超过 500 MB |
+| 附件直传失败 | RustFS CORS 是否允许应用源的 `PUT` 和 `Content-Type`，对象大小是否超过 500 MB；分片上传还必须暴露 `ETag` |
+| 草稿附件提示会话过期 | 默认会话有效期为 24 小时；重新创建会话并上传，过期文件会由清理任务删除 |
 | Swagger 页面空白 | 内网是否无法访问公共 CDN；先检查 `/openapi.json` 和 `/health` |
 | 首次启动出现演示项目/WKD | 检查是否误设 `SEED_DEMO_DATA=true`；生产必须为 `false`，测试演示数据不要导入生产 |
-| 修改管理员密码变量后旧密码仍有效 | 环境变量不会覆盖已存在管理员密码，需走正式重置流程 |
+| 修改管理员密码变量后旧密码仍有效 | 环境变量不会覆盖已存在管理员密码；按 10.5 节由运维在后端受控重置 |
 
 ## 12. 上线完成判定
 
 只有同时满足以下条件才建议判定生产部署完成：
 
 - OAuth 和普通用户登录链路完成并通过验收。
-- 生产无演示业务数据，初始化用户与项目角色已核对。
+- 生产无演示业务数据，OAuth 自动注册、初始化占位项目隔离与真实项目角色分配已核对。
 - HTTPS、独立密钥、私有 Bucket、网络访问控制和管理员唯一性符合要求。
 - WKD 状态流转、属性历史、附件、调试/正式构建和下载均通过真实服务验证。
 - 制品已解包并在隔离环境执行验证。

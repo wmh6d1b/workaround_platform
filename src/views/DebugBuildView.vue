@@ -4,12 +4,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import PageHeader from '../components/PageHeader.vue'
 import WkdTable from '../components/WkdTable.vue'
+import WkdColumnSettings from '../components/WkdColumnSettings.vue'
 import { artifacts as demoArtifacts, wkdList } from '../data/mock'
 import type { ArtifactItem, Wkd } from '../types'
 import { api, errorMessage, formatBytes, formatDateTime, normalizeWkd, openDownload, queryString, saveBlob } from '../api'
 import { can, ensureOptions, store } from '../store'
 import { emptyWkdFilters, filterWkdRows, optionsFromWkdRows } from '../utils/wkdFilters'
 import type { WkdFilterKey } from '../utils/wkdFilters'
+import { loadWkdColumns, saveWkdColumns } from '../utils/tablePreferences'
 import { buildDemoExecutablePackage } from '../utils/demoPackage'
 
 const search = ref('')
@@ -23,9 +25,11 @@ const building = ref(false)
 const loading = ref(false)
 const recordsOpen = ref(false)
 const artifactRows = ref<ArtifactItem[]>([])
+const columnUserId = computed(() => store.session?.id || store.session?.username || 'anonymous')
+const visibleColumns = ref(loadWkdColumns('debug-build', columnUserId.value))
 const machineOptions = computed(() => store.options.machines.filter(item => item.project_id === store.projectId))
 const filterOptions = computed(() => optionsFromWkdRows(sourceRows.value))
-const filterableColumns: WkdFilterKey[] = ['subsystem', 'owner', 'stage', 'status']
+const filterableColumns: WkdFilterKey[] = ['subsystem', 'owner', 'executionType', 'activityScene', 'measureType', 'stage', 'status']
 const filtered = computed(() => filterWkdRows(sourceRows.value, search.value, filters.value).sort((a,b) => a.createdAt.localeCompare(b.createdAt)))
 const paged = computed(() => filtered.value.slice((currentPage.value-1)*pageSize.value, currentPage.value*pageSize.value))
 const machineName = (id: string) => store.options.machines.find(item => item.id === id)?.name || id
@@ -91,13 +95,15 @@ onMounted(async () => {
 })
 watch(() => store.projectId, async () => { machineId.value = machineOptions.value[0]?.id || ''; filters.value=emptyWkdFilters(); await loadEligible() })
 watch(search, () => { currentPage.value = 1 })
+watch(visibleColumns, columns => saveWkdColumns('debug-build', columnUserId.value, columns), { deep: true })
+watch(columnUserId, userId => { visibleColumns.value = loadWkdColumns('debug-build', userId) })
 </script>
 
 <template>
   <div>
     <PageHeader title="调试构建" description="选择需要验证的规避措施，按创建时间从早到晚打包为调试软件包。"><el-button @click="openRecords"><el-icon><Document /></el-icon>构建记录</el-button><el-button type="primary" :loading="building" :disabled="!can('build.debug.build') || !selected.length || !machineId" @click="build"><el-icon><Box /></el-icon>构建已选<span v-if="selected.length">（{{ selected.length }}）</span></el-button></PageHeader>
     <div class="build-notice"><el-icon><InfoFilled /></el-icon><span>新建规避措施与已禁用状态不可勾选；正式交付请前往「正式构建」。</span><router-link to="/build/release">前往正式构建<el-icon><ArrowRight /></el-icon></router-link></div>
-    <section class="surface-card"><div class="filter-bar"><el-input v-model="search" class="search-input" clearable placeholder="搜索 WKD 编号或标题" :prefix-icon="Search" /><el-select v-model="machineId" placeholder="目标机台" style="width:140px" @change="loadEligible"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select><el-button text :loading="loading" @click="loadEligible"><el-icon><Refresh /></el-icon></el-button><div class="filter-spacer" /><span class="selection-summary">已选择 <strong>{{ selected.length }}</strong> 项</span></div><WkdTable :rows="paged" selectable :loading="loading" :columns="['id','title','machine','subsystem','owner','stage','status','updatedAt']" :filterable="filterableColumns" :filters="filters" :filter-options="filterOptions" @filter-change="headerFilterChanged" @selection="selected = $event" /><div class="table-footer"><span>共 {{ filtered.length }} 条 · 列表按创建时间升序排列</span><el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" background layout="prev, pager, next, sizes" :page-sizes="[10,20,50]" :total="filtered.length" /></div></section>
+    <section class="surface-card"><div class="filter-bar"><el-input v-model="search" class="search-input" clearable placeholder="搜索 WKD 编号或标题" :prefix-icon="Search" /><el-select v-model="machineId" placeholder="目标机台" style="width:140px" @change="loadEligible"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select><el-button text :loading="loading" @click="loadEligible"><el-icon><Refresh /></el-icon></el-button><div class="filter-spacer" /><WkdColumnSettings v-model="visibleColumns" table-key="debug-build" /><span class="selection-summary">已选择 <strong>{{ selected.length }}</strong> 项</span></div><WkdTable :rows="paged" selectable :loading="loading" :columns="visibleColumns" :filterable="filterableColumns" :filters="filters" :filter-options="filterOptions" @filter-change="headerFilterChanged" @selection="selected = $event" /><div class="table-footer"><span>共 {{ filtered.length }} 条 · 列表按创建时间升序排列</span><el-pagination v-model:current-page="currentPage" v-model:page-size="pageSize" background layout="prev, pager, next, sizes" :page-sizes="[10,20,50]" :total="filtered.length" /></div></section>
     <el-drawer v-model="recordsOpen" title="调试构建记录" size="720px"><el-table :data="artifactRows"><el-table-column label="制品文件" min-width="230"><template #default="{row}"><span class="mono">{{ row.filename }}</span></template></el-table-column><el-table-column label="机台" width="100"><template #default="{row}">{{ machineName(row.machine_id) }}</template></el-table-column><el-table-column label="大小" width="90"><template #default="{row}">{{ formatBytes(row.size) }}</template></el-table-column><el-table-column label="构建时间" width="145"><template #default="{row}">{{ formatDateTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="80"><template #default="{row}"><el-button text type="primary" @click="download(row)">下载</el-button></template></el-table-column></el-table></el-drawer>
   </div>
 </template>

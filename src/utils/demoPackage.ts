@@ -30,6 +30,12 @@ function tarEntry(name: string, content: Uint8Array, mode = 0o644) {
   const padding = new Uint8Array((512 - content.length % 512) % 512)
   return [header, content, padding]
 }
+function base64Bytes(value: string) {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+  return bytes
+}
 async function sha256(content: Uint8Array) {
   const hash = await crypto.subtle.digest('SHA-256', content.slice().buffer as ArrayBuffer)
   return [...new Uint8Array(hash)].map(value => value.toString(16).padStart(2, '0')).join('')
@@ -79,7 +85,7 @@ export async function buildDemoExecutablePackage({ artifactId, kind, machineId, 
         for (let fileIndex = 0; fileIndex < (params.files || []).length; fileIndex++) {
           const item = params.files[fileIndex]
           if (!item.name || item.name.includes('/') || item.name.includes('\\')) throw new Error(`上传文件名非法：${item.name || '空文件名'}`)
-          const content = encoder.encode(String(item.content || ''))
+          const content = item.encoding === 'base64' ? base64Bytes(String(item.content || '')) : encoder.encode(String(item.content || ''))
           const storedPath = `files/${String(position).padStart(2, '0')}/${String(fileIndex + 1).padStart(2, '0')}/${item.name}`
           add(`${packageDir}/${storedPath}`, content)
           files.push({ name: item.name, stored_path: storedPath, size: content.length, sha256: await sha256(content) })

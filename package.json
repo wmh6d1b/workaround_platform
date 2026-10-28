@@ -1,7 +1,7 @@
 {
   "name": "wmp-workaround-platform",
   "private": true,
-  "version": "1.4.0",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -17,6 +17,7 @@
     "dayjs": "^1.11.19",
     "echarts": "^6.0.0",
     "element-plus": "^2.11.8",
+    "hash-wasm": "^4.12.0",
     "vue": "^3.5.24",
     "vue-router": "^4.6.3"
   },
