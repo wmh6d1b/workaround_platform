@@ -1,17 +1,20 @@
-import csv
-import io
 from collections import Counter
 from datetime import date, datetime, time, timedelta
+from tempfile import SpooledTemporaryFile
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, noload
 
 from ..db import get_db
 from ..deps import current_user
 from ..models import ExecutionType, Machine, Project, Stage, Subsystem, User, Version, Wkd, WkdHistory, WkdStatus
-from ..services import wkd_out
+from ..services import wkd_list_out
 
 router = APIRouter(tags=['数据统计'])
 
@@ -38,7 +41,7 @@ def scoped_wkds(db: Session, scope: str, project_ids: list[str] | None,
         raise HTTPException(422, '统计作用域仅支持 project 或 global')
     if scope == 'project' and (not project_ids or len(project_ids) != 1):
         raise HTTPException(422, '项目统计必须且只能指定一个项目')
-    query = select(Wkd)
+    query = select(Wkd).options(noload(Wkd.operations))
     if project_ids:
         query = query.where(Wkd.project_id.in_(project_ids))
     if version_ids:
@@ -125,8 +128,10 @@ def statistics_options(db: Session = Depends(get_db), user: User = Depends(curre
 def statistics(filters: dict = Depends(query_arguments), db: Session = Depends(get_db), user: User = Depends(current_user)):
     rows, start, end = scoped_wkds(db, **filters)
     status_counts = {status.value: sum(x.status == status for x in rows) for status in WkdStatus}
-    wkd_ids = [x.id for x in rows]
-    approvals = list(db.scalars(select(WkdHistory).where(WkdHistory.wkd_id.in_(wkd_ids), WkdHistory.action == 'APPROVE')).all()) if wkd_ids else []
+    # Approval events belong to their event period, even when the WKD was created earlier.
+    business_rows, _, _ = scoped_wkds(db, **{**filters, 'start_date': None, 'end_date': None})
+    business_ids = [x.id for x in business_rows]
+    approvals = list(db.scalars(select(WkdHistory).where(WkdHistory.wkd_id.in_(business_ids), WkdHistory.action == 'APPROVE')).all()) if business_ids else []
     first_approvals = {}
     for history in sorted(approvals, key=lambda x: x.created_at):
         first_approvals.setdefault(history.wkd_id, history.created_at)
@@ -142,22 +147,56 @@ def statistics(filters: dict = Depends(query_arguments), db: Session = Depends(g
             'project_counts': [{'name': name, 'value': value} for name, value in project_counts.most_common()],
             'execution_counts': [{'name': name, 'value': value} for name, value in execution_counts.items()],
             'trend_granularity': granularity, 'trend': trend,
-            'items': [wkd_out(x) for x in sorted(rows, key=lambda x: x.updated_at, reverse=True)]}
+            'items': [wkd_list_out(x) for x in sorted(rows, key=lambda x: x.updated_at, reverse=True)]}
 
 
-@router.get('/statistics/export', summary='按相同条件导出完整统计明细 CSV（所有已登录用户）')
+def xlsx_safe(value) -> str:
+    text = '' if value is None else str(value)
+    if text.startswith(('=', '+', '-', '@', '\t', '\r', '\n')) or text.lstrip(' \t\r\n').startswith(('=', '+', '-', '@')):
+        return "'" + text
+    return text
+
+
+XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+EXPORT_HEADERS = ['WKD编号', '标题', '项目', '所属版本', '问题发现版本', '规划解决版本', '机台', '子系统', '责任人',
+                  '当前处理人', '执行类型', '活动场景', '措施类型', '执行阶段', '自定义阶段', '状态', '创建时间', '更新时间']
+
+
+@router.get('/statistics/export', summary='按相同条件导出完整统计明细 XLSX（所有已登录用户）')
 def export_statistics(filters: dict = Depends(query_arguments), db: Session = Depends(get_db), user: User = Depends(current_user)):
     rows, _, _ = scoped_wkds(db, **filters)
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['WKD编号', '标题', '项目', '所属版本', '问题发现版本', '规划解决版本', '机台', '子系统', '责任人',
-                     '当前处理人', '执行类型', '活动场景', '措施类型', '执行阶段', '自定义阶段', '状态', '创建时间', '更新时间'])
-    for x in rows:
-        writer.writerow([x.number, x.title, x.project.name, x.version.number, x.found_version.number if x.found_version else '',
-                         x.planned_version.number if x.planned_version else '', ','.join(m.name for m in x.machines),
-                         x.subsystem.name, x.owner.username, x.current_handler.username if x.current_handler else '', x.execution_type.value,
-                         x.activity_scene, x.measure_type, x.stage.value if x.stage else '', x.custom_stage_name or '',
-                         x.status.value, x.created_at, x.updated_at])
-    content = '\ufeff' + output.getvalue()
-    return StreamingResponse(iter([content.encode('utf-8')]), media_type='text/csv',
-                             headers={'Content-Disposition': 'attachment; filename=wmp-statistics.csv'})
+
+    def content():
+        # Small workbooks stay in memory; larger ones automatically spill to a temporary file.
+        with SpooledTemporaryFile(max_size=8 * 1024 * 1024) as output:
+            workbook = Workbook(write_only=True)
+            sheet = workbook.create_sheet('统计明细')
+            sheet.freeze_panes = 'A2'
+            sheet.sheet_view.showGridLines = False
+            widths = [20, 36, 20, 16, 16, 16, 24, 20, 16, 16, 16, 18, 18, 16, 20, 18, 22, 22]
+            for index, width in enumerate(widths, start=1):
+                sheet.column_dimensions[get_column_letter(index)].width = width
+            header = []
+            for title in EXPORT_HEADERS:
+                cell = WriteOnlyCell(sheet, value=title)
+                cell.font = Font(bold=True, color='FFFFFF')
+                cell.fill = PatternFill('solid', fgColor='315EFB')
+                cell.alignment = Alignment(vertical='center')
+                header.append(cell)
+            sheet.append(header)
+            for x in rows:
+                sheet.append([xlsx_safe(value) for value in [
+                    x.number, x.title, x.project.name, x.version.number, x.found_version.number if x.found_version else '',
+                    x.planned_version.number if x.planned_version else '', ','.join(m.name for m in x.machines),
+                    x.subsystem.name, x.owner.username, x.current_handler.username if x.current_handler else '', x.execution_type.value,
+                    x.activity_scene, x.measure_type, x.stage.value if x.stage else '', x.custom_stage_name or '',
+                    x.status.value, x.created_at, x.updated_at,
+                ]])
+            sheet.auto_filter.ref = f'A1:R{len(rows) + 1}'
+            workbook.save(output)
+            output.seek(0)
+            while chunk := output.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(content(), media_type=XLSX_MEDIA_TYPE,
+                             headers={'Content-Disposition': 'attachment; filename=wmp-statistics.xlsx'})

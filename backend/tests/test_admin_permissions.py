@@ -68,7 +68,7 @@ class GlobalAuthorizationTests(unittest.TestCase):
         admin = SimpleNamespace(id='admin', username='admin', employee_id='E0001', department='系统管理',
                                 email=None, is_superuser=True)
         db = Mock()
-        db.scalars.side_effect = [Rows(projects), Rows([]), Rows([]), Rows([]), Rows([]), Rows([])]
+        db.scalars.side_effect = [Rows(projects), Rows([]), Rows([]), Rows([]), Rows([]), Rows([]), Rows([])]
         result = options(None, db, admin)
         self.assertEqual({item['id'] for item in result['projects']}, {'project-1', 'project-2'})
         self.assertEqual(result['users'][0]['id'], 'admin')

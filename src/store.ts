@@ -81,23 +81,28 @@ export async function refreshIdentity() {
   persistSession()
 }
 
+let optionsRequest = 0
+let permissionsRequest = 0
+
 export async function refreshPermissions() {
   if (store.demoMode || !store.session || !localStorage.getItem('wmp-token')) return
-  const result = await api.get<{ permissions: string[] }>(`/auth/permissions${queryString({ project_id: store.projectId })}`)
+  const requestId = ++permissionsRequest
+  const projectId = store.projectId
+  const result = await api.get<{ permissions: string[] }>(`/auth/permissions${queryString({ project_id: projectId })}`)
+  if (requestId !== permissionsRequest || projectId !== store.projectId || !store.session) return
   store.session.permissions = result.permissions
   persistSession()
 }
 
 export async function ensureOptions(force = false) {
-  if (store.optionsLoading) return
   if (!force && store.optionsReady) return
+  const requestId = ++optionsRequest
+  const projectId = store.projectId
   store.optionsLoading = true
   try {
-    if (store.demoMode) {
-      store.options = cloneDemoOptions()
-    } else {
-      store.options = await api.get<BootstrapOptions>(`/bootstrap/options${queryString({ project_id: force ? store.projectId : undefined })}`)
-    }
+    const options = store.demoMode ? cloneDemoOptions() : await api.get<BootstrapOptions>(`/bootstrap/options${queryString({ project_id: force ? projectId : undefined })}`)
+    if (requestId !== optionsRequest) return
+    store.options = options
     const project = store.options.projects.find(item => item.id === store.projectId) || store.options.projects[0]
     if (project) {
       store.projectId = project.id
@@ -109,7 +114,7 @@ export async function ensureOptions(force = false) {
     store.version = version?.number || version?.name || ''
     store.optionsReady = true
   } finally {
-    store.optionsLoading = false
+    if (requestId === optionsRequest) store.optionsLoading = false
   }
 }
 

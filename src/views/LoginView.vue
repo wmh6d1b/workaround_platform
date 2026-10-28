@@ -65,7 +65,7 @@ async function oauthLogin() {
         <h2>登录您的工作空间</h2>
         <p class="login-subtitle">使用本地账号，或通过企业身份认证登录</p>
         <el-form label-position="top" @submit.prevent="submit" class="login-form">
-          <el-form-item label="用户名"><el-input v-model="form.username" size="large" autocomplete="username" placeholder="请输入用户名" :prefix-icon="User" /></el-form-item>
+          <el-form-item label="用户名或工号"><el-input v-model="form.username" size="large" autocomplete="username" placeholder="请输入用户名或工号" :prefix-icon="User" /></el-form-item>
           <el-form-item label="密码"><el-input v-model="form.password" size="large" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :prefix-icon="Lock" /></el-form-item>
           <el-button type="primary" size="large" native-type="submit" :loading="loading" class="login-submit">进入平台<el-icon class="el-icon--right"><Right /></el-icon></el-button>
         </el-form>

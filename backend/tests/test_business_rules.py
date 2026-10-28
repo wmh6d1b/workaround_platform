@@ -74,8 +74,8 @@ class WkdInputTests(unittest.TestCase):
 
 class InputValidationTests(unittest.TestCase):
     def test_transition_note_is_trimmed(self):
-        self.assertIsNone(TransitionInput(note='   ').note)
-        self.assertEqual(TransitionInput(note='  审核通过  ').note, '审核通过')
+        self.assertIsNone(TransitionInput(lock_version=1, note='   ').note)
+        self.assertEqual(TransitionInput(lock_version=1, note='  审核通过  ').note, '审核通过')
 
     def test_blank_state_note_is_rejected(self):
         with self.assertRaises(ValidationError):
@@ -83,11 +83,11 @@ class InputValidationTests(unittest.TestCase):
         self.assertEqual(StateNoteInput(content='  已自验证  ').content, '已自验证')
 
     def test_review_manager_id_is_trimmed(self):
-        self.assertIsNone(TransitionInput(manager_id='   ').manager_id)
-        self.assertEqual(TransitionInput(manager_id='  manager-1  ').manager_id, 'manager-1')
+        self.assertIsNone(TransitionInput(lock_version=1, manager_id='   ').manager_id)
+        self.assertEqual(TransitionInput(lock_version=1, manager_id='  manager-1  ').manager_id, 'manager-1')
 
     def test_transition_can_carry_complete_wkd_data(self):
-        result = TransitionInput(data={**BASE, 'title': '流转时提交的完整标题'}, note='自验证完成')
+        result = TransitionInput(lock_version=1, data={**BASE, 'title': '流转时提交的完整标题'}, note='自验证完成')
         self.assertEqual(result.data.title, '流转时提交的完整标题')
         self.assertEqual(result.note, '自验证完成')
 

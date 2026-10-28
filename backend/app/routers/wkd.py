@@ -1,18 +1,18 @@
 from datetime import datetime
 import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, noload
 from ..attachment_service import bind_attachments
 from ..db import get_db
 from ..deps import accessible_project_ids, authorize, current_user, ensure_operational_project
 from ..models import ExecutionType, Machine, User, Wkd, WkdHistory, WkdStatus
 from ..schemas import CreateWkdInput, TransitionInput
-from ..services import apply_wkd, audit, commit, diff_snapshots, history, next_wkd_number, payload_audit_snapshot, validate_relations, wkd_audit_snapshot, wkd_out
+from ..services import apply_wkd, audit, commit, diff_snapshots, history, next_wkd_number, payload_audit_snapshot, validate_relations, wkd_audit_snapshot, wkd_list_out, wkd_out
 
 router = APIRouter(prefix='/wkds', tags=['WKD 全生命周期'])
 
-@router.get('', summary='查询 WKD 列表（搜索、标签及机台、子系统、责任人、执行类型、活动场景、措施类型、阶段、状态多选筛选）')
+@router.get('', summary='查询轻量 WKD 列表，不返回 operations；支持搜索、标签及多维多选筛选')
 def list_wkds(project_id: str | None = None, version_id: str | None = None, machine_id: str | None = None,
               subsystem_id: str | None = None, status: WkdStatus | None = None, q: str | None = None,
               machine_ids: list[str] | None = Query(None), subsystem_ids: list[str] | None = Query(None),
@@ -24,7 +24,7 @@ def list_wkds(project_id: str | None = None, version_id: str | None = None, mach
     authorize(db, user, 'wkd.view', project_id)
     if tab not in ('all', 'created', 'pending', 'handled'):
         raise HTTPException(422, '未知列表标签')
-    base = select(Wkd)
+    base = select(Wkd).options(noload(Wkd.operations))
     if project_id:
         base = base.where(Wkd.project_id == project_id)
     else:
@@ -56,21 +56,27 @@ def list_wkds(project_id: str | None = None, version_id: str | None = None, mach
         if name == 'handled': return query.where(Wkd.id.in_(select(WkdHistory.wkd_id).where(WkdHistory.operator_id == user.id)))
         return query
 
-    tab_counts = {name: len(db.scalars(with_tab(base, name)).unique().all()) for name in ('all', 'created', 'pending', 'handled')}
+    tab_counts = {name: db.scalar(select(func.count()).select_from(with_tab(base, name).order_by(None).subquery())) or 0
+                  for name in ('all', 'created', 'pending', 'handled')}
     query = with_tab(base, tab)
     total = tab_counts[tab]
     items = db.scalars(query.order_by(Wkd.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).unique().all()
-    return {'items': [wkd_out(x) for x in items], 'total': total, 'page': page, 'page_size': page_size, 'tab_counts': tab_counts}
+    return {'items': [wkd_list_out(x) for x in items], 'total': total, 'page': page, 'page_size': page_size, 'tab_counts': tab_counts}
 
 def eligible_reviewers(db: Session, project_id: str) -> list[User]:
     from ..models import ProjectMember, Role, RolePermission
-    query = (select(User)
+    project_query = (select(User)
              .join(ProjectMember, ProjectMember.user_id == User.id)
              .join(Role, Role.id == ProjectMember.role_id)
              .join(RolePermission, RolePermission.role_id == Role.id)
-             .where(ProjectMember.project_id == project_id, RolePermission.permission_code == 'wkd.review', User.is_active.is_(True))
-             .distinct().order_by(User.username))
-    return list(db.scalars(query).unique().all())
+             .where(ProjectMember.project_id == project_id, RolePermission.permission_code == 'wkd.review', User.is_active.is_(True)))
+    membership_exists = select(ProjectMember.id).where(ProjectMember.project_id == project_id, ProjectMember.user_id == User.id).exists()
+    global_query = (select(User)
+             .join(Role, Role.id == User.global_role_id)
+             .join(RolePermission, RolePermission.role_id == Role.id)
+             .where(RolePermission.permission_code == 'wkd.review', User.is_active.is_(True), ~membership_exists))
+    rows = list(db.scalars(project_query).unique().all()) + list(db.scalars(global_query).unique().all())
+    return sorted({item.id: item for item in rows}.values(), key=lambda item: item.username)
 
 @router.post('', status_code=201, summary='首次创建 WKD，幂等绑定已完成草稿附件')
 def create_wkd(payload: CreateWkdInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
@@ -96,7 +102,7 @@ def create_wkd(payload: CreateWkdInput, db: Session = Depends(get_db), user: Use
     commit(db)
     return wkd_out(wkd)
 
-@router.get('/reviewers', summary='查询当前项目可指派的软件经理')
+@router.get('/reviewers', summary='查询当前项目可指派的软件经理，包含有效的全局软件经理')
 def list_reviewers(project_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     try:
         authorize(db, user, 'wkd.submit', project_id)
@@ -104,16 +110,16 @@ def list_reviewers(project_id: str, db: Session = Depends(get_db), user: User = 
         authorize(db, user, 'wkd.disable', project_id)
     return [{'id': item.id, 'username': item.username, 'employee_id': item.employee_id, 'department': item.department, 'email': item.email} for item in eligible_reviewers(db, project_id)]
 
-@router.get('/{wkd_id}', summary='获取 WKD 详情、操作编排和字段属性')
+@router.get('/{wkd_id}', summary='获取 WKD 详情、完整操作编排和字段属性')
 def get_wkd(wkd_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     wkd = db.get(Wkd, wkd_id)
     if not wkd: raise HTTPException(404, 'WKD 不存在')
     authorize(db, user, 'wkd.view', wkd.project_id)
     return wkd_out(wkd)
 
-@router.post('/{wkd_id}/transitions/{action}', summary='状态流转；提交类操作携带完整数据，指派类操作必须传入 manager_id')
+@router.post('/{wkd_id}/transitions/{action}', summary='状态流转；所有操作必须携带 lock_version，提交类携带完整数据，指派类携带 manager_id')
 def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    wkd = db.get(Wkd, wkd_id)
+    wkd = db.get(Wkd, wkd_id, with_for_update=True)
     if not wkd: raise HTTPException(404, 'WKD 不存在')
     from ..lifecycle import RULES, transition_rule
     if action not in RULES: raise HTTPException(404, '未知流转操作')
@@ -125,7 +131,7 @@ def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session =
     handler_bound = {'submit_verify', 'submit_review', 'approve', 'reject', 'disable', 'confirm_disable', 'reject_disable'}
     if action in handler_bound and not user.is_superuser and wkd.current_handler_id != user.id:
         raise HTTPException(403, '仅当前处理人可以执行该流转操作')
-    if payload.lock_version is not None and payload.lock_version != wkd.lock_version:
+    if payload.lock_version != wkd.lock_version:
         raise HTTPException(409, '数据已被他人修改，请刷新')
     if note_required and not payload.note: raise HTTPException(422, '该操作必须填写说明或原因')
 

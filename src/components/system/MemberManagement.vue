@@ -6,6 +6,7 @@ import { Search } from '@element-plus/icons-vue'
 import { api, errorMessage, queryString, saveBlob } from '../../api'
 import { can, ensureOptions, store } from '../../store'
 import { isGlobalAdmin } from '../../permissions'
+import { createUuid } from '../../utils/id'
 import type { OptionItem, UserOption } from '../../types'
 
 interface Member { id: string; project_id: string; role_id: string; role: string; user: UserOption }
@@ -103,7 +104,7 @@ async function save() {
       const user = users.value.find(item => item.id === form.user_id)!
       const role = store.options.roles.find(item => item.id === form.role_id)!
       if (editing.value) Object.assign(editing.value, { role_id: role.id, role: role.name })
-      else members.value.push({ id: crypto.randomUUID(), project_id: selectedProjectId.value, role_id: role.id, role: role.name, user })
+      else members.value.push({ id: createUuid(), project_id: selectedProjectId.value, role_id: role.id, role: role.name, user })
     } else {
       if (editing.value) await api.put(`/projects/${selectedProjectId.value}/members/${editing.value.id}`, form)
       else await api.post(`/projects/${selectedProjectId.value}/members`, form)

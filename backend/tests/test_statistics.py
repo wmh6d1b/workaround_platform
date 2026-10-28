@@ -1,12 +1,15 @@
+import asyncio
+import io
 import unittest
 from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from openpyxl import load_workbook
 
 from app.models import ExecutionType, Stage, WkdStatus
-from app.routers.statistics import bucket, export_statistics, parse_period, scoped_wkds, trend_data
+from app.routers.statistics import XLSX_MEDIA_TYPE, bucket, export_statistics, parse_period, scoped_wkds, trend_data
 
 
 def user(superuser=False):
@@ -94,14 +97,40 @@ class StatisticsFilterTests(unittest.TestCase):
         self.assertEqual(bucket(date(2026, 10, 8), 'month'), date(2026, 10, 1))
 
     @patch('app.routers.statistics.scoped_wkds')
-    def test_export_reuses_identical_filters(self, scoped):
-        scoped.return_value = ([], date(2026, 10, 1), date(2026, 10, 27))
+    def test_export_reuses_filters_and_returns_real_xlsx(self, scoped):
+        row = SimpleNamespace(
+            number='WKD202610280001', title='=1+1', project=SimpleNamespace(name='项目A'),
+            version=SimpleNamespace(number='V1.0'), found_version=None, planned_version=None,
+            machines=[SimpleNamespace(name='机台A'), SimpleNamespace(name='机台B')],
+            subsystem=SimpleNamespace(name='子系统A'), owner=SimpleNamespace(username='责任人'), current_handler=None,
+            execution_type=ExecutionType.AUTOMATED, activity_scene='常规版本升级', measure_type='事前规避措施',
+            stage=Stage.POST_START, custom_stage_name=None, status=WkdStatus.APPROVED,
+            created_at=datetime(2026, 10, 1, 8, 30), updated_at=datetime(2026, 10, 27, 9, 30),
+        )
+        scoped.return_value = ([row], date(2026, 10, 1), date(2026, 10, 27))
         db, current = Mock(), user()
         filters = filter_values(statuses=[WkdStatus.APPROVED])
         response = export_statistics(filters, db, current)
         scoped.assert_called_once_with(db, **filters)
-        self.assertEqual(response.media_type, 'text/csv')
-        self.assertIn('wmp-statistics.csv', response.headers['Content-Disposition'])
+        self.assertEqual(response.media_type, XLSX_MEDIA_TYPE)
+        self.assertIn('wmp-statistics.xlsx', response.headers['Content-Disposition'])
+
+        async def read_body():
+            return b''.join([chunk async for chunk in response.body_iterator])
+
+        content = asyncio.run(read_body())
+        self.assertTrue(content.startswith(b'PK'))
+        workbook = load_workbook(io.BytesIO(content), read_only=False, data_only=False)
+        sheet = workbook['统计明细']
+        self.assertEqual(sheet.max_row, 2)
+        self.assertEqual(sheet.max_column, 18)
+        self.assertEqual(sheet['A2'].value, 'WKD202610280001')
+        self.assertEqual(sheet['B2'].value, "'=1+1")
+        self.assertEqual(sheet['B2'].data_type, 's')
+        self.assertEqual(sheet['G2'].value, '机台A,机台B')
+        self.assertEqual(sheet.freeze_panes, 'A2')
+        self.assertEqual(sheet.auto_filter.ref, 'A1:R2')
+        self.assertEqual(sheet.column_dimensions['B'].width, 36)
 
 
 if __name__ == '__main__':

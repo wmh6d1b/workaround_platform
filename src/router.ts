@@ -5,13 +5,13 @@ import { ElMessage } from 'element-plus'
 import AppLayout from './layouts/AppLayout.vue'
 import LoginView from './views/LoginView.vue'
 import OAuthCallbackView from './views/OAuthCallbackView.vue'
-import HomeView from './views/HomeView.vue'
-import WorkbenchView from './views/WorkbenchView.vue'
-import DebugBuildView from './views/DebugBuildView.vue'
-import ReleaseBuildView from './views/ReleaseBuildView.vue'
-import StatisticsView from './views/StatisticsView.vue'
-import SystemView from './views/SystemView.vue'
-import WkdDetailView from './views/WkdDetailView.vue'
+const HomeView = () => import('./views/HomeView.vue')
+const WorkbenchView = () => import('./views/WorkbenchView.vue')
+const DebugBuildView = () => import('./views/DebugBuildView.vue')
+const ReleaseBuildView = () => import('./views/ReleaseBuildView.vue')
+const StatisticsView = () => import('./views/StatisticsView.vue')
+const SystemView = () => import('./views/SystemView.vue')
+const WkdDetailView = () => import('./views/WkdDetailView.vue')
 
 const router = createRouter({
   history: createWebHistory(),

@@ -1,6 +1,6 @@
 import base64
 import binascii
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import PurePosixPath
 import re
 from typing import Any, Literal
@@ -28,8 +28,8 @@ class OperationInput(BaseModel):
             if not target_path or not path.is_absolute() or '..' in path.parts:
                 raise ValueError('上传文件操作必须填写不包含 .. 的绝对目标路径')
             files = self.params.get('files')
-            if not isinstance(files, list) or not files:
-                raise ValueError('上传文件操作至少需要一个文件')
+            if not isinstance(files, list) or not files or len(files) > 100:
+                raise ValueError('上传文件操作需要 1 至 100 个文件')
             names = []
             for item in files:
                 if not isinstance(item, dict):
@@ -63,28 +63,52 @@ class OperationInput(BaseModel):
                 raise ValueError('Linux 命令操作必须填写执行命令')
             if {'env', 'environment', 'environment_variables'} & set(self.params):
                 raise ValueError('Linux 命令操作不支持环境变量参数')
-        if self.type == 'SCRIPT' and not str(self.params.get('script', '')).strip():
-            raise ValueError('脚本操作必须填写脚本内容')
+            workdir = str(self.params.get('workdir') or '/').strip()
+            path = PurePosixPath(workdir)
+            if not path.is_absolute() or '..' in path.parts:
+                raise ValueError('Linux 工作目录必须是不包含 .. 的绝对路径')
+            self.params['workdir'] = workdir
+        if self.type in {'LINUX_COMMAND', 'SCRIPT'}:
+            try:
+                timeout = int(self.params.get('timeout', 60))
+            except (TypeError, ValueError):
+                raise ValueError('执行超时必须是整数秒') from None
+            if not 1 <= timeout <= 86400:
+                raise ValueError('执行超时必须在 1 至 86400 秒之间')
+            self.params['timeout'] = timeout
+        if self.type == 'LINUX_COMMAND':
+            try:
+                exit_code = int(self.params.get('exit_code', 0))
+            except (TypeError, ValueError):
+                raise ValueError('期望退出码必须是整数') from None
+            if not 0 <= exit_code <= 255:
+                raise ValueError('期望退出码必须在 0 至 255 之间')
+            self.params['exit_code'] = exit_code
+        if self.type == 'SCRIPT':
+            if not str(self.params.get('script', '')).strip():
+                raise ValueError('脚本操作必须填写脚本内容')
+            if self.params.get('script_type', 'Python') not in {'Python', 'Shell'}:
+                raise ValueError('脚本类型仅支持 Python 或 Shell')
         return self
 
 class WkdInput(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
-    issue_no: str | None = None
-    requirement_no: str | None = None
+    issue_no: str | None = Field(default=None, max_length=100)
+    requirement_no: str | None = Field(default=None, max_length=100)
     project_id: str
     version_id: str
     found_version_id: str | None = None
     planned_version_id: str | None = None
     subsystem_id: str
-    machine_ids: list[str] = Field(min_length=1)
+    machine_ids: list[str] = Field(min_length=1, max_length=1000)
     owner_id: str | None = None
     execution_type: ExecutionType
     activity_scene: Literal['首版本部署', 'ES集成活动', '常规版本升级']
     measure_type: Literal['事前规避措施', '事后恢复措施']
     remark: str | None = None
     stage: Stage | None = None
-    custom_stage_name: str | None = None
+    custom_stage_name: str | None = Field(default=None, max_length=100, pattern=r'^[A-Za-z][A-Za-z0-9_.-]*$')
     operations: list[OperationInput] = Field(default_factory=list)
     lock_version: int | None = None
 
@@ -109,6 +133,12 @@ class WkdInput(BaseModel):
                 raise ValueError('自动化执行至少编排一个原子操作')
             if self.stage == Stage.CUSTOM and not self.custom_stage_name:
                 raise ValueError('自定义阶段必须填写阶段名称')
+            if self.stage != Stage.CUSTOM:
+                self.custom_stage_name = None
+            operation_bytes = sum(int(file.get('size', 0)) for operation in self.operations
+                                  for file in operation.params.get('files', []) if operation.type == 'UPLOAD_FILE')
+            if operation_bytes > 100 * 1024 * 1024:
+                raise ValueError('单个 WKD 的原子操作文件总大小不能超过 100 MB')
         else:
             self.stage = None
             self.custom_stage_name = None
@@ -136,7 +166,7 @@ class CreateWkdInput(WkdInput):
 
 class TransitionInput(BaseModel):
     note: str | None = Field(default=None, max_length=10_000_000)
-    lock_version: int | None = None
+    lock_version: int = Field(ge=1)
     manager_id: str | None = None
     data: WkdInput | None = None
 
@@ -167,7 +197,14 @@ class StateNoteInput(BaseModel):
 class BuildInput(BaseModel):
     project_id: str
     machine_id: str
-    wkd_ids: list[str] = Field(min_length=1)
+    wkd_ids: list[str] = Field(min_length=1, max_length=200)
+
+    @field_validator('wkd_ids')
+    @classmethod
+    def reject_duplicate_wkds(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError('构建 WKD 列表不能包含重复项')
+        return value
 
 class UploadInput(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
@@ -219,15 +256,20 @@ class SessionUploadCompleteInput(BaseModel):
     parts: list[CompletedPart] = Field(default_factory=list, max_length=10_000)
 
 class EntityInput(BaseModel):
-    name: str
-    code: str | None = None
+    name: str = Field(min_length=1, max_length=120)
+    code: str | None = Field(default=None, max_length=80, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
     project_id: str | None = None
     owner_id: str | None = None
-    status: str = 'ENABLED'
-    number: str | None = None
-    model: str | None = None
-    location: str | None = None
-    baseline_date: str | None = None
+    status: Literal['ENABLED', 'DISABLED', 'STOPPED', 'DEVELOPING', 'RELEASED', 'ARCHIVED', 'INITIALIZING'] = 'ENABLED'
+    number: str | None = Field(default=None, max_length=60)
+    model: str | None = Field(default=None, max_length=100)
+    location: str | None = Field(default=None, max_length=120)
+    baseline_date: date | None = None
+
+    @field_validator('name', 'code', 'number', 'model', 'location', mode='before')
+    @classmethod
+    def trim_entity_fields(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 class UserInput(BaseModel):
     username: str = Field(min_length=1, max_length=80)

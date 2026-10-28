@@ -20,7 +20,7 @@ function reset() {
     </template>
     <div class="column-setting">
       <div class="column-setting-head">
-        <div><strong>自定义表格字段</strong><p>字段偏好将保存到当前用户</p></div>
+        <div><strong>自定义表格字段</strong><p>字段偏好将保存到当前浏览器中的当前用户</p></div>
         <el-button text type="primary" @click="reset">恢复默认</el-button>
       </div>
       <el-checkbox-group :model-value="modelValue" @update:model-value="emit('update:modelValue', $event as string[])">

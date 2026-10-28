@@ -10,6 +10,7 @@ import { can, ensureOptions, store } from '../store'
 import { statePanels } from '../components/wkd/states'
 import { clearWkdDraft, readWkdDraft, saveWkdDraft } from '../utils/wkdDrafts'
 import { createUploadSession, getUploadSession, removeUpload, uploadSessionAttachment } from '../utils/attachments'
+import { createUuid } from '../utils/id'
 import { MAX_OPERATION_FILE_SIZE, operationFileSize, readOperationFile } from '../utils/operationFiles'
 import type { UploadOperationFile } from '../utils/operationFiles'
 import type { AttachmentItem, ExecuteStage, UserOption, WkdFieldChange, WkdHistoryItem, WkdStatus } from '../types'
@@ -51,6 +52,7 @@ const router = useRouter()
 const loading = ref(false)
 const saving = ref(false)
 const uploading = ref(false)
+let uploadController: AbortController | null = null
 const dragged = ref<number | null>(null)
 const activePanels = ref<string[]>([])
 const activeDetailTab = ref<'flow' | 'attachments' | 'history'>('flow')
@@ -108,6 +110,7 @@ const form = reactive<DetailForm>(blankForm())
 
 const isCurrentHandler = computed(() => store.session?.isSuperuser || (demoMode.value && store.session?.role === '系统管理员') || form.current_handler_id === store.session?.id)
 const canEdit = computed(() => (isNew.value ? can('wkd.create') : ['NEW_WKD', 'VERIFY'].includes(form.status) && can('wkd.edit')) && isCurrentHandler.value)
+const canUploadAttachment = computed(() => can('files.upload') && (isNew.value ? can('wkd.create') : form.status === 'APPROVED' || (['NEW_WKD', 'VERIFY'].includes(form.status) && canEdit.value)))
 const canReviewCurrent = computed(() => can('wkd.review') && isCurrentHandler.value)
 const hasPendingAttachments = computed(() => attachments.value.some(item => item.status !== 'READY' || item.busy))
 const hasPendingOperationFiles = computed(() => form.operations.some(operation => operation.type === 'UPLOAD_FILE' && (operation.params.files || []).some((file: UploadOperationFile) => file.loading)))
@@ -126,6 +129,14 @@ const machineOptions = computed(() => store.options.machines.filter(item => item
 const subsystemOptions = computed(() => store.options.subsystems.filter(item => item.project_id === form.project_id))
 const ownerName = computed(() => form.owner || store.options.users.find(item => item.id === form.owner_id)?.username || store.session?.username || '当前用户')
 const currentHandlerName = computed(() => form.current_handler || store.options.users.find(item => item.id === form.current_handler_id)?.username || '暂无待处理人')
+function personDisplay(username: string | null, userId: string | null, fallback = '') {
+  const user = userId ? store.options.users.find(item => item.id === userId) : undefined
+  const name = username || user?.username || (userId === store.session?.id ? store.session?.username : '')
+  const employeeId = user?.employee_id || (userId === store.session?.id ? store.session?.employeeId : '')
+  return [name, employeeId].filter(Boolean).join(' ') || fallback
+}
+const ownerDisplay = computed(() => personDisplay(form.owner, form.owner_id, ownerName.value))
+const currentHandlerDisplay = computed(() => personDisplay(form.current_handler, form.current_handler_id, currentHandlerName.value))
 const stateVisits = computed(() => {
   if (isNew.value) return [{ key: 'new', status: 'NEW_WKD' as WkdStatus, occurrence: 1, entries: [] as WkdHistoryItem[], current: true }]
   const visits: { key: string; status: WkdStatus; occurrence: number; entries: WkdHistoryItem[]; current: boolean }[] = []
@@ -152,7 +163,7 @@ function applyDetail(data: any) {
   Object.assign(form, blankForm(), data)
   form.stage = data.stage || ''
   form.machine_ids = [...(data.machine_ids || [])]
-  form.operations = (data.operations || []).map((item: any) => ({ id: item.id || crypto.randomUUID(), type: item.type, params: { ...item.params, ...(item.type === 'UPLOAD_FILE' ? { files: (item.params.files || []).map((file: UploadOperationFile) => ({ name: file.name, content: file.content || '', encoding: file.encoding, size: file.size })) } : {}) } }))
+  form.operations = (data.operations || []).map((item: any) => ({ id: item.id || createUuid(), type: item.type, params: { ...item.params, ...(item.type === 'UPLOAD_FILE' ? { files: (item.params.files || []).map((file: UploadOperationFile) => ({ name: file.name, content: file.content || '', encoding: file.encoding, size: file.size })) } : {}) } }))
 }
 
 function applyDemo(id: string) {
@@ -189,10 +200,10 @@ function applyDemo(id: string) {
 function draftSessionKey() { return `wmp-upload-session:${draftUserId()}:${form.project_id}` }
 function creationKeyStorageKey() { return `wmp-create-key:${draftUserId()}:${form.project_id}` }
 function creationIdempotencyKey() {
-  let value = localStorage.getItem(creationKeyStorageKey())
+  let value = sessionStorage.getItem(creationKeyStorageKey())
   if (!value) {
-    value = crypto.randomUUID()
-    localStorage.setItem(creationKeyStorageKey(), value)
+    value = createUuid()
+    sessionStorage.setItem(creationKeyStorageKey(), value)
   }
   return value
 }
@@ -201,16 +212,16 @@ async function restoreDraftUploadSession() {
   attachments.value = []
   uploadSessionId.value = ''
   if (demoMode.value) return
-  const storedId = localStorage.getItem(draftSessionKey())
+  const storedId = sessionStorage.getItem(draftSessionKey())
   if (!storedId) return
   try {
     const session = await getUploadSession(storedId)
     if (session.project_id !== form.project_id || session.wkd_id) throw new Error('上传会话与当前新建页面不匹配')
     uploadSessionId.value = session.id
     attachments.value = session.attachments.map(item => ({ ...item, progress: item.status === 'READY' ? 100 : 0 }))
-    if (attachments.value.length) ElMessage.info('已恢复当前项目的草稿附件')
+    if (attachments.value.length) ElMessage.info('已恢复当前标签页的草稿附件')
   } catch (error) {
-    if ([404, 410].includes((error as { status?: number }).status || 0)) localStorage.removeItem(draftSessionKey())
+    if ([404, 410].includes((error as { status?: number }).status || 0)) sessionStorage.removeItem(draftSessionKey())
     else ElMessage.warning(errorMessage(error, '草稿附件恢复失败，请稍后重试'))
   }
 }
@@ -219,13 +230,13 @@ async function ensureUploadSession() {
   if (uploadSessionId.value) return uploadSessionId.value
   const session = await createUploadSession(form.project_id, isNew.value ? undefined : form.id)
   uploadSessionId.value = session.id
-  if (isNew.value) localStorage.setItem(draftSessionKey(), session.id)
+  if (isNew.value) sessionStorage.setItem(draftSessionKey(), session.id)
   return session.id
 }
 
 function clearCreatedSessionReferences() {
-  localStorage.removeItem(draftSessionKey())
-  localStorage.removeItem(creationKeyStorageKey())
+  sessionStorage.removeItem(draftSessionKey())
+  sessionStorage.removeItem(creationKeyStorageKey())
   uploadSessionId.value = ''
 }
 
@@ -308,7 +319,7 @@ function addOperation(type: OperationType) {
     LINUX_COMMAND: { command: '', workdir: '/opt/wmp', timeout: '30', exit_code: '0' },
     SCRIPT: { script_type: 'Python', script: '', arguments: '', timeout: '60' },
   }
-  form.operations.push({ id: crypto.randomUUID(), type, params: JSON.parse(JSON.stringify(defaults[type])) })
+  form.operations.push({ id: createUuid(), type, params: JSON.parse(JSON.stringify(defaults[type])) })
 }
 async function addUploadFile(operation: Operation, uploadFile: UploadFile) {
   const raw = uploadFile.raw
@@ -443,7 +454,7 @@ function upsertDemoWkd() {
     form.number = id
     form.status = 'NEW_WKD'
     wkdList.unshift(normalizeWkd({ ...payload(), id, number: id, status: form.status, created_at: now.toISOString(), updated_at: now.toISOString(), project: form.project, version: store.options.versions.find(item => item.id === form.version_id)?.name, subsystem: store.options.subsystems.find(item => item.id === form.subsystem_id)?.name, owner: store.options.users.find(item => item.id === form.owner_id)?.username, machines: machineOptions.value.filter(item => form.machine_ids.includes(item.id)) }))
-    historyRows.value.unshift({ id: crypto.randomUUID(), action: 'CREATE', from_status: null, to_status: 'NEW_WKD', note: hasRichContent(notes.NEW_WKD) ? sanitizeRichText(notes.NEW_WKD) : null, operator: store.session?.username || '当前用户', created_at: now.toISOString() })
+    historyRows.value.unshift({ id: createUuid(), action: 'CREATE', from_status: null, to_status: 'NEW_WKD', note: hasRichContent(notes.NEW_WKD) ? sanitizeRichText(notes.NEW_WKD) : null, operator: store.session?.username || '当前用户', created_at: now.toISOString() })
   } else {
     const item = wkdList.find(row => row.id === form.id)
     if (item) Object.assign(item, normalizeWkd({ ...payload(), id: form.id, number: form.number, status: form.status, created_at: item.createdAt, updated_at: now.toISOString(), project: form.project, version: store.options.versions.find(item => item.id === form.version_id)?.name, subsystem: store.options.subsystems.find(item => item.id === form.subsystem_id)?.name, owner: store.options.users.find(item => item.id === form.owner_id)?.username, machines: machineOptions.value.filter(item => form.machine_ids.includes(item.id)) }))
@@ -477,10 +488,15 @@ async function persist(): Promise<string | null> {
       await router.replace(`/wkd/${form.id}`)
       ElMessage.success(`WKD 已创建${readyAttachmentIds.length ? `，并绑定 ${readyAttachmentIds.length} 个附件` : ''}`)
     } else {
-      saveWkdDraft(draftUserId(), draftWkdId(), {
+      const draft = {
         status: form.status, visitKey: currentVisitKey.value, lockVersion: form.lock_version,
         form: JSON.parse(JSON.stringify(form)), note: sanitizeRichText(notes[form.status]), savedAt: new Date().toISOString(),
-      })
+      }
+      if (new Blob([JSON.stringify(draft)]).size > 4 * 1024 * 1024) {
+        ElMessage.warning('本地草稿超过 4 MB，无法可靠保存。请使用“提交自验证”或“选择软件经理并提交”直接提交，文件内容不会被静默删除')
+        return null
+      }
+      saveWkdDraft(draftUserId(), draftWkdId(), draft)
       ElMessage.success('草稿已保存在当前浏览器，未提交后端')
     }
     return form.id
@@ -558,7 +574,7 @@ async function transition(action: string, managerId?: string) {
       persistDemoWkds()
     }
     if (previousHandlerId !== form.current_handler_id) changes.push({ field: 'current_handler', label: '当前处理人', before: previousHandlerName === '暂无待处理人' ? null : previousHandlerName, after: form.current_handler })
-    historyRows.value.unshift({ id: crypto.randomUUID(), action: action.toUpperCase(), from_status: previousStatus, to_status: next[action], note: hasRichContent(note) ? note : null, changes, operator: store.session?.username || '当前用户', created_at: new Date().toISOString() })
+    historyRows.value.unshift({ id: createUuid(), action: action.toUpperCase(), from_status: previousStatus, to_status: next[action], note: hasRichContent(note) ? note : null, changes, operator: store.session?.username || '当前用户', created_at: new Date().toISOString() })
     savedSnapshot = currentSnapshot
     clearLocalDraft(previousStatus, previousVisitKey)
     notes[previousStatus] = ''
@@ -572,6 +588,8 @@ function chooseFiles() {
   fileInput.value?.click()
 }
 
+function cancelAttachmentUpload() { uploadController?.abort() }
+
 async function uploadFiles(event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
@@ -582,23 +600,28 @@ async function uploadFiles(event: Event) {
   const empty = files.find(file => file.size === 0)
   if (empty) return ElMessage.error(`附件「${empty.name}」是空文件，不能上传`)
   uploading.value = true
+  uploadController = new AbortController()
+  const signal = uploadController.signal
   let completed = 0
   let sessionId = ''
   try {
     if (!demoMode.value) sessionId = await ensureUploadSession()
   } catch (error) {
     uploading.value = false
+    uploadController = null
     ElMessage.error(errorMessage(error, '附件上传会话创建失败'))
     return
   }
   for (const file of files) {
+    if (signal.aborted) break
     let currentId = ''
     try {
       if (demoMode.value) {
-        attachments.value.push({ id: crypto.randomUUID(), filename: file.name, size: file.size, content_type: file.type,
+        attachments.value.push({ id: createUuid(), filename: file.name, size: file.size, content_type: file.type,
           status: 'READY', progress: 100, created_at: new Date().toISOString(), url: URL.createObjectURL(file) })
       } else {
         const item = await uploadSessionAttachment(sessionId, file, {
+          signal,
           onStart: start => {
             currentId = start.id
             attachments.value.push({ ...start, status: 'UPLOADING', progress: 0, busy: true })
@@ -616,13 +639,15 @@ async function uploadFiles(event: Event) {
       const target = attachments.value.find(row => row.id === currentId)
       if (target) {
         target.busy = false
-        target.error = errorMessage(error, '上传失败')
+        target.error = signal.aborted ? '上传已取消，可移除后重试' : errorMessage(error, '上传失败')
       }
-      ElMessage.error(`${file.name}：${errorMessage(error, '上传失败')}`)
+      if (!signal.aborted) ElMessage.error(`${file.name}：${errorMessage(error, '上传失败')}`)
     }
   }
   uploading.value = false
-  if (completed) ElMessage.success(`已上传 ${completed} 个附件`)
+  uploadController = null
+  if (signal.aborted) ElMessage.info('已取消后续附件上传')
+  else if (completed) ElMessage.success(`已上传 ${completed} 个附件`)
 }
 
 async function removeAttachment(item: AttachmentItem) {
@@ -654,10 +679,10 @@ async function downloadAttachment(item: AttachmentItem) {
       <button class="back-button" title="返回" @click="router.back()"><el-icon><ArrowLeft /></el-icon></button>
       <div class="detail-identity">
         <div><h1>{{ isNew ? '新建规避措施' : form.title }}</h1><span class="detail-status" :class="statusMeta[form.status].tone"><i />{{ statusMeta[form.status].label }}</span><span v-if="demoMode" class="demo-badge">DEMO</span></div>
-        <p><span class="mono">{{ isNew ? '编号按日自动生成' : form.number }}</span><span>·</span>{{ form.project || '未选择项目' }}<template v-if="form.version"> / {{ form.version }}</template></p>
+        <p><template v-if="!isNew"><span class="mono">{{ form.number }}</span><span>·</span></template>{{ form.project || '未选择项目' }}<template v-if="form.version"> / {{ form.version }}</template></p>
       </div>
       <div class="detail-actions">
-        <el-button v-if="canEdit" :loading="saving" :disabled="isNew && hasPendingAttachments" @click="save"><el-icon><Check /></el-icon>{{ isNew ? '保存并创建' : '保存' }}</el-button>
+        <el-button v-if="canEdit" :loading="saving" :disabled="isNew && hasPendingAttachments" @click="save"><el-icon><Check /></el-icon>{{ isNew ? '保存并创建' : '保存本地草稿' }}</el-button>
         <el-button v-if="form.status==='NEW_WKD' && can('wkd.submit') && isCurrentHandler" type="primary" :loading="saving" :disabled="hasPendingAttachments" @click="transition('submit_verify')">提交自验证<el-icon><Right /></el-icon></el-button>
         <template v-if="form.status==='REVIEW' && canReviewCurrent"><el-button :loading="saving" :disabled="hasPendingAttachments" @click="transition('reject')">审核驳回</el-button><el-button type="primary" :loading="saving" :disabled="hasPendingAttachments" @click="transition('approve')"><el-icon><Check /></el-icon>审核通过</el-button></template>
         <template v-if="form.status==='DISABLE_CONFIRM' && canReviewCurrent"><el-button :loading="saving" :disabled="hasPendingAttachments" @click="transition('reject_disable')">拒绝禁用</el-button><el-button type="danger" :loading="saving" :disabled="hasPendingAttachments" @click="transition('confirm_disable')"><el-icon><CircleClose /></el-icon>确认禁用</el-button></template>
@@ -675,8 +700,8 @@ async function downloadAttachment(item: AttachmentItem) {
     <div class="detail-workspace">
       <div class="left-column">
         <section class="surface-card operation-section" :class="{disabled: form.execution_type==='MANUAL'}">
-          <div class="card-header"><div><h3>原子操作编排</h3><p>拖拽卡片调整执行顺序，所有关联机台共用此配置</p></div><div class="stage-select"><span>执行阶段</span><el-select v-model="form.stage" :disabled="!canEdit || form.execution_type==='MANUAL'" placeholder="请选择阶段" style="width:150px"><el-option v-for="(label,key) in stageLabels" :key="key" :label="label" :value="key" /></el-select></div></div>
-          <div v-if="form.stage==='custom'" class="custom-stage"><span>自定义阶段名称</span><el-input v-model="form.custom_stage_name" :disabled="!canEdit" placeholder="当前版本内唯一，将作为脚本阶段参数" /></div>
+          <div class="card-header"><div><h3>原子操作编排</h3><p>拖拽卡片调整执行顺序，所有关联机台共用此配置</p></div><div class="stage-select"><span>执行阶段</span><el-select v-model="form.stage" :disabled="!canEdit || form.execution_type==='MANUAL'" style="width:150px"><el-option v-for="(label,key) in stageLabels" :key="key" :label="label" :value="key" /></el-select></div></div>
+          <div v-if="form.stage==='custom'" class="custom-stage"><span>自定义阶段名称</span><el-input v-model="form.custom_stage_name" :disabled="!canEdit" /></div>
           <div v-if="form.execution_type==='MANUAL'" class="manual-empty"><el-icon><User /></el-icon><strong>人工操作</strong><p>当前执行类型无需选择阶段或编排原子操作</p></div>
           <div v-else class="operation-layout">
             <div class="operation-canvas" :class="{readonly:!canEdit}">
@@ -705,7 +730,7 @@ async function downloadAttachment(item: AttachmentItem) {
                       <div v-else class="upload-file-empty">尚未选择文件，单个文件不超过 20 MB</div>
                     </div>
                   </template>
-                  <template v-else-if="op.type==='LINUX_COMMAND'"><label class="wide">执行命令<el-input v-model="op.params.command" :disabled="!canEdit" placeholder="输入 Linux 命令" /></label><label>工作目录<el-input v-model="op.params.workdir" :disabled="!canEdit" /></label><label>超时（秒）<el-input v-model="op.params.timeout" :disabled="!canEdit" /></label><label>期望退出码<el-input v-model="op.params.exit_code" :disabled="!canEdit" /></label></template>
+                  <template v-else-if="op.type==='LINUX_COMMAND'"><label class="wide">执行命令<el-input v-model="op.params.command" :disabled="!canEdit" /></label><label>工作目录<el-input v-model="op.params.workdir" :disabled="!canEdit" /></label><label>超时（秒）<el-input v-model="op.params.timeout" :disabled="!canEdit" /></label><label>期望退出码<el-input v-model="op.params.exit_code" :disabled="!canEdit" /></label></template>
                   <template v-else><label>脚本类型<el-select v-model="op.params.script_type" :disabled="!canEdit"><el-option label="Python" value="Python" /><el-option label="Shell" value="Shell" /></el-select></label><label>执行参数<el-input v-model="op.params.arguments" :disabled="!canEdit" /></label><label class="wide">脚本内容<el-input v-model="op.params.script" type="textarea" :rows="3" :disabled="!canEdit" /></label><label>超时（秒）<el-input v-model="op.params.timeout" :disabled="!canEdit" /></label></template>
                 </div>
               </div>
@@ -722,7 +747,6 @@ async function downloadAttachment(item: AttachmentItem) {
           </div>
 
           <div v-show="activeDetailTab==='flow'" class="detail-tab-panel" role="tabpanel">
-            <div class="tab-section-heading"><div><h3>状态说明与流转</h3><p>每次进入状态都会新增独立面板，仅展示说明与流转意见</p></div></div>
             <el-collapse v-model="activePanels">
               <el-collapse-item v-for="visit in stateVisits" :key="visit.key" :name="visit.key" :class="{ 'current-visit': visit.current }">
                 <template #title><span class="collapse-state-dot" :class="statusMeta[visit.status].tone" /><span>{{ statusMeta[visit.status].label }}</span><small>第 {{ visit.occurrence }} 次 · {{ visit.status }}</small><em v-if="visit.current">当前</em></template>
@@ -736,7 +760,7 @@ async function downloadAttachment(item: AttachmentItem) {
             <div class="attachment-section">
               <div class="attachment-heading">
                 <div><h3>附件</h3><p>创建前即可上传；单文件不超过 500 MB，大文件自动分片</p></div>
-                <el-button size="small" :disabled="!can('files.upload')" :loading="uploading" @click="chooseFiles"><el-icon><Paperclip /></el-icon>添加附件</el-button>
+                <div><el-button v-if="uploading" size="small" type="danger" plain @click="cancelAttachmentUpload">取消上传</el-button><el-button v-if="canUploadAttachment" size="small" :disabled="uploading" @click="chooseFiles"><el-icon><Paperclip /></el-icon>添加附件</el-button></div>
                 <input ref="fileInput" type="file" multiple hidden @change="uploadFiles" />
               </div>
               <div v-if="isNew" class="attachment-draft-note"><el-icon><InfoFilled /></el-icon>附件暂存于当前项目的上传会话，创建 WKD 时自动绑定</div>
@@ -775,31 +799,31 @@ async function downloadAttachment(item: AttachmentItem) {
       </div>
 
       <aside class="surface-card property-panel">
-        <div class="card-header"><div><h3>字段属性</h3><p>{{ canEdit?'当前状态允许编辑':'当前状态字段只读' }}</p></div><el-icon><Lock v-if="!canEdit" /><Edit v-else /></el-icon></div>
+        <div class="card-header"><h3>属性</h3></div>
         <el-form label-position="top" class="property-form">
-          <div class="form-section-title">基本信息</div>
-          <el-form-item label="WKD 标题" required><el-input v-model="form.title" :disabled="!canEdit" maxlength="200" placeholder="简要说明需要规避的问题" /></el-form-item>
-          <el-form-item label="规避措施描述" required><el-input v-model="form.description" type="textarea" :rows="3" :disabled="!canEdit" placeholder="说明问题现象、触发条件和规避方式" /></el-form-item>
-          <div class="property-grid"><el-form-item label="问题单号"><el-input v-model="form.issue_no" :disabled="!canEdit" /></el-form-item><el-form-item label="需求单号"><el-input v-model="form.requirement_no" :disabled="!canEdit" placeholder="两项至少填一项" /></el-form-item><el-form-item label="问题发现版本" :required="!!form.issue_no"><el-select v-model="form.found_version_id" :disabled="!canEdit" filterable clearable placeholder="输入版本号辅助选择"><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="规划解决版本"><el-select v-model="form.planned_version_id" :disabled="!canEdit" filterable clearable placeholder="请选择版本"><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></el-form-item></div>
+          <div class="form-section-title">基本信息<small>问题单号与需求单号至少填一项</small></div>
+          <el-form-item label="WKD 标题" required><el-input v-model="form.title" :disabled="!canEdit" maxlength="200" /></el-form-item>
+          <el-form-item label="规避措施描述" required><el-input v-model="form.description" type="textarea" :rows="3" :disabled="!canEdit" /></el-form-item>
+          <div class="property-grid"><el-form-item label="问题单号"><el-input v-model="form.issue_no" :disabled="!canEdit" /></el-form-item><el-form-item label="需求单号"><el-input v-model="form.requirement_no" :disabled="!canEdit" /></el-form-item><el-form-item label="问题发现版本" :required="!!form.issue_no"><el-select v-model="form.found_version_id" :disabled="!canEdit" filterable clearable><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="规划解决版本"><el-select v-model="form.planned_version_id" :disabled="!canEdit" filterable clearable><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></el-form-item></div>
 
-          <div class="form-section-title">业务归属<small>项目与所属版本由顶部上下文自动带入</small></div>
-          <div class="property-grid"><el-form-item label="所属项目" required><el-input :model-value="form.project" disabled><template #suffix><el-icon><Lock /></el-icon></template></el-input></el-form-item><el-form-item label="所属版本" required><el-input :model-value="form.version" disabled><template #suffix><el-icon><Lock /></el-icon></template></el-input></el-form-item></div>
-          <el-form-item label="关联机台" required><el-select v-model="form.machine_ids" multiple :disabled="!canEdit" placeholder="可关联多个机台"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
-          <div class="property-grid"><el-form-item label="所属子系统" required><el-select v-model="form.subsystem_id" :disabled="!canEdit" filterable placeholder="请选择子系统"><el-option v-for="item in subsystemOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="责任人"><div class="owner-fixed"><span>{{ ownerName.slice(0,1) }}</span><strong>{{ ownerName }}</strong><small><el-icon><Lock /></el-icon>创建人固定</small></div></el-form-item></div>
-          <el-form-item label="当前处理人"><div class="current-handler-fixed" :class="{empty:!form.current_handler_id}"><span><el-icon><User /></el-icon></span><strong>{{ currentHandlerName }}</strong><small><el-icon><Lock /></el-icon>随状态流转更新</small></div></el-form-item>
+          <div class="form-section-title">业务归属</div>
+          <div class="property-grid"><el-form-item label="所属项目" required><el-input :model-value="form.project" readonly /></el-form-item><el-form-item label="所属版本" required><el-input :model-value="form.version" readonly /></el-form-item></div>
+          <el-form-item label="关联机台" required><el-select v-model="form.machine_ids" multiple :disabled="!canEdit"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+          <el-form-item label="所属子系统" required><el-select v-model="form.subsystem_id" :disabled="!canEdit" filterable><el-option v-for="item in subsystemOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+          <el-form-item label="责任人"><el-input :model-value="ownerDisplay" class="identity-input" readonly /></el-form-item>
+          <el-form-item label="当前处理人"><el-input :model-value="currentHandlerDisplay" class="identity-input" readonly /></el-form-item>
 
           <div class="form-section-title">执行属性</div>
           <el-form-item label="执行类型" required><el-select v-model="form.execution_type" :disabled="!canEdit" @change="executionTypeChanged"><el-option label="自动化执行" value="AUTOMATED" /><el-option label="人工操作" value="MANUAL" /></el-select></el-form-item>
           <div class="property-grid"><el-form-item label="活动场景" required><el-select v-model="form.activity_scene" :disabled="!canEdit"><el-option v-for="item in ['首版本部署','ES集成活动','常规版本升级']" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="类型" required><el-select v-model="form.measure_type" :disabled="!canEdit"><el-option label="事前规避措施" value="事前规避措施" /><el-option label="事后恢复措施" value="事后恢复措施" /></el-select></el-form-item></div>
-          <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="2" :disabled="!canEdit" placeholder="非必填" /></el-form-item>
-
+          <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="2" :disabled="!canEdit" /></el-form-item>
         </el-form>
       </aside>
     </div>
 
     <el-dialog v-model="reviewDialogOpen" :title="reviewDialogCopy.title" width="460px" :close-on-click-modal="false">
       <div class="review-dialog-intro"><el-icon><User /></el-icon><p>{{ reviewDialogCopy.intro }}</p></div>
-      <el-form label-position="top" v-loading="reviewersLoading"><el-form-item label="软件经理" required><el-select v-model="reviewerId" filterable placeholder="请选择软件经理" style="width:100%"><el-option v-for="item in reviewerOptions" :key="item.id" :label="item.username" :value="item.id"><div class="reviewer-option"><strong>{{ item.username }}</strong><span>{{ item.employee_id || item.email }}</span></div></el-option></el-select></el-form-item></el-form>
+      <el-form label-position="top" v-loading="reviewersLoading"><el-form-item label="软件经理" required><el-select v-model="reviewerId" filterable style="width:100%"><el-option v-for="item in reviewerOptions" :key="item.id" :label="item.username" :value="item.id"><div class="reviewer-option"><strong>{{ item.username }}</strong><span>{{ item.employee_id || item.email }}</span></div></el-option></el-select></el-form-item></el-form>
       <template #footer><el-button @click="reviewDialogOpen=false">取消</el-button><el-button type="primary" :disabled="!reviewerId" :loading="saving" @click="confirmReviewAssignment">{{ reviewDialogCopy.button }}</el-button></template>
     </el-dialog>
   </div>
@@ -846,9 +870,8 @@ async function downloadAttachment(item: AttachmentItem) {
 .detail-tab-panel { min-height:160px; }.tab-section-heading { margin-bottom:15px; }.tab-section-heading h3,.attachment-heading h3 { margin:0; color:#344054; font-size:13px; }.tab-section-heading p,.attachment-heading p { margin:5px 0 0; color:#98a2b3; font-size:9px; font-weight:400; }
 .state-panel { padding-bottom:18px; }.state-panel>.card-header { margin-bottom:15px; }.state-panel :deep(.el-collapse) { border:0; }.state-panel :deep(.el-collapse-item) { margin-bottom:10px; }.state-panel :deep(.el-collapse-item:last-child) { margin-bottom:0; }.state-panel :deep(.el-collapse-item__header) { height:42px; line-height:1; padding:0 13px; background:#eceff3; border:1px solid #dfe4ea; border-radius:7px; color:#475467; font-size:11px; font-weight:600; cursor:pointer; transition:background .18s,border-color .18s; }.state-panel :deep(.el-collapse-item__header:hover) { background:#e4e8ee; border-color:#cfd6df; }.state-panel :deep(.el-collapse-item__header.is-active) { background:#e7ebf0; }.state-panel :deep(.current-visit .el-collapse-item__header) { border-color:#bdc9dc; }.state-panel :deep(.el-collapse-item__wrap) { border:0; background:transparent; }.state-panel :deep(.el-collapse-item__content) { padding:12px 3px 4px; }.state-panel :deep(.el-collapse-item__title) { display:flex; align-items:center; min-width:0; }.state-panel :deep(.el-collapse-item__title) small { color:#8a94a3; font-size:8px; font-weight:400; margin-left:9px; }.state-panel :deep(.el-collapse-item__title) em { font-size:8px; font-style:normal; font-weight:500; color:#315efb; background:#f5f7ff; border-radius:4px; padding:3px 5px; margin-left:8px; }.collapse-state-dot { width:7px; height:7px; border-radius:50%; margin-right:8px; background:#98a2b3; flex-shrink:0; }.collapse-state-dot.warning { background:#f2ad4c; }.collapse-state-dot.processing { background:#315efb; }.collapse-state-dot.success { background:#20ad78; }.collapse-state-dot.disabled { background:#7a8494; }
 .state-note-editor { border-top:1px dashed #e0e5ec; padding-top:13px; margin-top:4px; }.state-note-editor>label { display:block; font-size:10px; color:#667085; margin-bottom:7px; }.editor-toolbar { display:flex; align-items:center; gap:4px; border:1px solid #dfe4eb; border-bottom:0; border-radius:7px 7px 0 0; background:#f8f9fb; padding:6px 8px; }.editor-toolbar button { width:27px; height:25px; border:0; border-radius:4px; background:transparent; color:#475467; cursor:pointer; }.editor-toolbar button:hover { background:#e9edf3; }.editor-toolbar>span { flex:1; }.editor-toolbar>label { display:flex; align-items:center; gap:5px; color:#667085; font-size:9px; cursor:pointer; }.editor-toolbar input { width:24px; height:22px; padding:1px; border:0; background:transparent; cursor:pointer; }.rich-editor { min-height:120px; max-height:420px; overflow:auto; border:1px solid #dfe4eb; border-radius:0 0 7px 7px; padding:11px 12px; outline:none; color:#344054; background:#fff; font-size:11px; line-height:1.75; white-space:pre-wrap; }.rich-editor:focus { border-color:#9db3ec; box-shadow:0 0 0 2px #eef2ff; }.rich-editor:empty:before { content:attr(data-placeholder); color:#a0a8b7; pointer-events:none; }.editor-footer { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:9px; }.editor-footer>span { color:#a0a8b7; font-size:9px; }.history-list { display:flex; flex-direction:column; gap:8px; padding-bottom:10px; }.history-row { background:#f8f9fb; border:1px solid #f0f2f5; border-radius:7px; padding:10px 12px; }.history-row>div:first-child { display:flex; justify-content:space-between; gap:12px; }.history-row strong { font-size:10px; }.history-row span { color:#98a2b3; font-size:9px; }.rich-text { color:#667085; font-size:10px; line-height:1.7; margin:8px 0 0; overflow-wrap:anywhere; }.rich-text p { margin:0 0 5px; }.rich-text p:last-child { margin-bottom:0; }.rich-text img,.rich-editor img { display:block; max-width:100%; height:auto; border-radius:6px; margin:8px 0; }
-.property-panel { position:sticky; top:0; padding:19px 20px; }.property-panel>.card-header { margin-bottom:14px; }.property-form :deep(.el-form-item) { margin-bottom:13px; }.property-form :deep(.el-form-item__label) { font-size:10px; color:#667085; padding-bottom:5px; line-height:1.4; }.property-form :deep(.el-select) { width:100%; }.property-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }.form-section-title { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#344054; font-size:10px; font-weight:600; border-top:1px solid #edf0f4; padding-top:14px; margin:4px 0 13px; }.form-section-title>small { color:#98a2b3; font-size:7px; font-weight:400; }.form-section-title:first-child { border-top:0; padding-top:0; margin-top:0; }
-.owner-fixed { display:flex; align-items:center; min-height:32px; gap:7px; border:1px solid #e4e7ec; border-radius:6px; background:#f7f8fa; padding:5px 8px; }.owner-fixed>span { display:grid; place-items:center; width:21px; height:21px; border-radius:50%; background:#e7ebf3; color:#667085; font-size:9px; }.owner-fixed>strong { color:#475467; font-size:10px; font-weight:500; }.owner-fixed>small { display:flex; align-items:center; gap:2px; margin-left:auto; color:#98a2b3; font-size:7px; white-space:nowrap; }
-.current-handler-fixed { display:flex; align-items:center; min-height:38px; gap:8px; border:1px solid #dbe4f7; border-radius:7px; background:#f5f7ff; padding:6px 9px; }.current-handler-fixed>span { display:grid; place-items:center; width:24px; height:24px; border-radius:50%; background:#e3eaff; color:#315efb; }.current-handler-fixed>strong { color:#344054; font-size:10px; font-weight:600; }.current-handler-fixed>small { display:flex; align-items:center; gap:3px; margin-left:auto; color:#8a98b5; font-size:7px; }.current-handler-fixed.empty { border-color:#e4e7ec; background:#f7f8fa; }.current-handler-fixed.empty>span { background:#e9edf2; color:#98a2b3; }.current-handler-fixed.empty>strong { color:#98a2b3; font-weight:400; }
+.property-panel { position:sticky; top:88px; padding:22px; }.property-panel>.card-header { margin-bottom:18px; padding-bottom:15px; border-bottom:1px solid #edf0f4; }.property-form :deep(.el-form-item) { margin-bottom:16px; }.property-form :deep(.el-form-item__label) { color:#475467; padding-bottom:6px; line-height:1.4; font-weight:500; }.property-form :deep(.el-select) { width:100%; }.property-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 12px; }.form-section-title { display:flex; align-items:center; justify-content:space-between; gap:12px; color:#344054; font-size:13px; font-weight:600; border-top:1px solid #edf0f4; padding-top:17px; margin:5px 0 15px; }.form-section-title>small { color:#98a2b3; font-size:12px; line-height:1.5; font-weight:400; text-align:right; }.form-section-title:first-child { border-top:0; padding-top:0; margin-top:0; }
+.identity-input :deep(.el-input__wrapper) { background:#f8fafc; box-shadow:0 0 0 1px #e7eaf0 inset; }.identity-input :deep(.el-input__inner) { color:#344054; font-weight:500; }
 .review-assignment-bar { display:flex; align-items:center; gap:11px; padding:16px 18px; border-color:#dbe4f7; background:linear-gradient(135deg,#fff 0%,#f6f8ff 100%); }.review-assignment-icon { width:34px; height:34px; display:grid; place-items:center; flex-shrink:0; border-radius:9px; background:#e8eeff; color:#315efb; font-size:17px; }.review-assignment-bar>div:nth-child(2) { flex:1; min-width:0; }.review-assignment-bar strong { color:#344054; font-size:11px; }.review-assignment-bar p { margin:4px 0 0; color:#8a94a6; font-size:9px; }.review-assignment-bar>.el-button { flex-shrink:0; }
 .review-dialog-intro { display:flex; align-items:flex-start; gap:10px; padding:12px; margin-bottom:17px; border-radius:8px; background:#f5f7ff; color:#315efb; }.review-dialog-intro .el-icon { margin-top:2px; flex-shrink:0; }.review-dialog-intro p { margin:0; color:#667085; font-size:12px; line-height:1.7; }.reviewer-option { display:flex; align-items:center; justify-content:space-between; gap:20px; }.reviewer-option span { color:#98a2b3; font-size:11px; }
 .attachment-section { min-height:150px; }.attachment-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }.attachment-empty { min-height:120px; border:1px dashed #e1e6ee; border-radius:8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:#a0a8b7; font-size:10px; }.attachment-empty .el-icon { font-size:22px; }.attachment-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }.attachment-list>div { display:flex; align-items:center; gap:9px; background:#f8f9fb; border:1px solid #edf0f4; border-radius:8px; padding:11px; }.attachment-list>div>span { width:30px; height:30px; display:grid; place-items:center; border-radius:7px; background:#edf0ff; color:#315efb; flex-shrink:0; }.attachment-list>div>div { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; }.attachment-list strong { font-size:10px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.attachment-list small { color:#98a2b3; font-size:8px; }

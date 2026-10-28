@@ -24,20 +24,26 @@ def validate_relations(db: Session, payload) -> list[Machine]:
     version = db.get(Version, payload.version_id)
     if not version or version.project_id != payload.project_id:
         raise HTTPException(422, '目标版本不属于所选项目')
+    if version.status == 'ARCHIVED':
+        raise HTTPException(422, '归档版本不能用于新的规避措施业务')
     for related_id in (payload.found_version_id, payload.planned_version_id):
         if related_id and (not db.get(Version, related_id) or db.get(Version, related_id).project_id != payload.project_id):
             raise HTTPException(422, '关联版本不属于所选项目')
     subsystem = db.get(Subsystem, payload.subsystem_id)
     if not subsystem or subsystem.project_id != payload.project_id:
         raise HTTPException(422, '子系统不存在或不属于所选项目')
+    if subsystem.status == 'DISABLED':
+        raise HTTPException(422, '停用子系统不能用于新的规避措施业务')
     machines = db.scalars(select(Machine).where(Machine.id.in_(payload.machine_ids))).all()
     if len(machines) != len(set(payload.machine_ids)) or any(x.project_id != payload.project_id for x in machines):
         raise HTTPException(422, '机台不存在或不属于所选项目')
+    if any(machine.status == 'STOPPED' for machine in machines):
+        raise HTTPException(422, '停用机台不能用于新的规避措施业务')
     if payload.owner_id:
         owner = db.get(User, payload.owner_id)
         membership = db.scalar(select(ProjectMember).where(ProjectMember.project_id == payload.project_id, ProjectMember.user_id == payload.owner_id))
-        if not owner or not owner.is_active or (not owner.is_superuser and not membership):
-            raise HTTPException(422, '责任人不存在、已停用或不是当前项目成员')
+        if not owner or not owner.is_active or (not owner.is_superuser and not membership and not owner.global_role_id):
+            raise HTTPException(422, '责任人不存在、已停用或无权访问当前项目')
     return machines
 
 def apply_wkd(db: Session, wkd: Wkd, payload, machines: list[Machine]) -> None:
@@ -127,8 +133,8 @@ def commit(db: Session) -> None:
             raise HTTPException(422, '问题单号、需求单号或问题发现版本不符合填写规则') from None
         raise HTTPException(409, '数据冲突，请刷新后重试') from None
 
-def wkd_out(wkd: Wkd) -> dict:
-    return {
+def _wkd_out(wkd: Wkd, include_operations: bool) -> dict:
+    result = {
         'id': wkd.id, 'number': wkd.number, 'title': wkd.title, 'description': wkd.description,
         'issue_no': wkd.issue_no, 'requirement_no': wkd.requirement_no,
         'project_id': wkd.project_id, 'project': wkd.project.name,
@@ -143,12 +149,23 @@ def wkd_out(wkd: Wkd) -> dict:
         'remark': wkd.remark, 'status': wkd.status.value, 'stage': wkd.stage.value if wkd.stage else None,
         'custom_stage_name': wkd.custom_stage_name, 'lock_version': wkd.lock_version,
         'disabled_reason': wkd.disabled_reason, 'disabled_from': wkd.disabled_from.value if wkd.disabled_from else None,
-        'operations': [{'id': x.id, 'position': x.position, 'type': x.type.value, 'params': x.params} for x in wkd.operations],
         'created_at': wkd.created_at, 'updated_at': wkd.updated_at,
     }
+    if include_operations:
+        result['operations'] = [{'id': x.id, 'position': x.position, 'type': x.type.value, 'params': x.params} for x in wkd.operations]
+    return result
 
-def artifact_out(artifact: BuildArtifact) -> dict:
+
+def wkd_out(wkd: Wkd) -> dict:
+    return _wkd_out(wkd, True)
+
+
+def wkd_list_out(wkd: Wkd) -> dict:
+    return _wkd_out(wkd, False)
+
+
+def artifact_out(artifact: BuildArtifact, include_snapshots: bool = True) -> dict:
     return {'id': artifact.id, 'number': artifact.number, 'filename': artifact.filename, 'project_id': artifact.project_id,
             'machine_id': artifact.machine_id, 'type': artifact.type.value, 'size': artifact.size, 'sha256': artifact.sha256,
             'builder_id': artifact.builder_id, 'created_at': artifact.created_at,
-            'items': [{'wkd_id': x.wkd_id, 'position': x.position, 'snapshot': x.snapshot} for x in artifact.items]}
+            'items': [{'wkd_id': x.wkd_id, 'position': x.position, **({'snapshot': x.snapshot} if include_snapshots else {})} for x in artifact.items]}

@@ -7,8 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .deps import authorize
-from .models import Attachment, UploadSession, User, Wkd
+from .deps import authorize, ensure_operational_project
+from .models import Attachment, UploadSession, User, Wkd, WkdStatus
 from .schemas import SessionUploadCompleteInput, SessionUploadInput, UploadSessionInput
 from .storage import (
     abort_multipart_upload,
@@ -47,15 +47,27 @@ def session_out(session: UploadSession, attachments: list[Attachment]) -> dict:
     }
 
 
+def authorize_wkd_upload(db: Session, user: User, wkd: Wkd) -> None:
+    ensure_operational_project(db, wkd.project_id)
+    if wkd.status in {WkdStatus.REVIEW, WkdStatus.DISABLE_CONFIRM, WkdStatus.DISABLED}:
+        raise HTTPException(409, f'{wkd.status.value} 状态不允许上传附件')
+    authorize(db, user, 'files.upload', wkd.project_id)
+    if wkd.status in {WkdStatus.NEW_WKD, WkdStatus.VERIFY}:
+        authorize(db, user, 'wkd.edit', wkd.project_id)
+        if not user.is_superuser and wkd.current_handler_id != user.id:
+            raise HTTPException(403, '仅当前处理人可以在编辑阶段上传附件')
+
+
 def create_session(db: Session, user: User, payload: UploadSessionInput) -> UploadSession:
     project_id = payload.project_id
+    ensure_operational_project(db, project_id)
     if payload.wkd_id:
         wkd = db.get(Wkd, payload.wkd_id)
         if not wkd:
             raise HTTPException(404, 'WKD 不存在')
         if wkd.project_id != project_id:
             raise HTTPException(422, '上传会话项目与 WKD 所属项目不一致')
-        authorize(db, user, 'files.upload', project_id)
+        authorize_wkd_upload(db, user, wkd)
     else:
         authorize(db, user, 'wkd.create', project_id)
     session = UploadSession(project_id=project_id, owner_id=user.id, wkd_id=payload.wkd_id,
@@ -72,6 +84,12 @@ def owned_session(db: Session, user: User, session_id: str, permission: str = 'f
     if session.status != 'OPEN' or session.expires_at <= datetime.utcnow():
         raise HTTPException(410, '上传会话已过期，请重新创建')
     authorize(db, user, permission, session.project_id)
+    if session.wkd_id:
+        # Lock the WKD so status transitions and completion of an upload cannot cross.
+        wkd = db.get(Wkd, session.wkd_id, with_for_update=True)
+        if not wkd:
+            raise HTTPException(404, 'WKD 不存在')
+        authorize_wkd_upload(db, user, wkd)
     return session
 
 

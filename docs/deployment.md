@@ -1,8 +1,8 @@
-# WMP v1.5 部署文档
+# WMP v1.6 部署文档
 
 本文用于将当前工程部署到已具备 PostgreSQL 和 RustFS 的内网 Linux 服务器，分别说明**测试版本**与**生产版本**。示例系统为 Ubuntu/Debian，其他 Linux 发行版请替换对应的软件包安装命令和 systemd、Nginx 配置路径。
 
-> 适用代码版本：WMP v1.5.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
+> 适用代码版本：WMP v1.6.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
 
 ## 1. 架构与部署边界
 
@@ -49,9 +49,12 @@ FastAPI / Uvicorn
 1. **OIDC 负责身份认证，WMP 负责业务授权。** 已导入用户首次登录只按工号绑定 OIDC `sub`，后续按 `sub` 识别；用户名可以重复，不能作为账号绑定依据，IdP 必须返回工号。未注册的企业用户会自动创建 WMP 账号，并加入按需创建的“用户初始化”占位项目。该项目的“初始化用户”角色仅有首页权限，真实项目角色和按钮权限仍由 WMP 项目管理员分配。系统管理员不能通过 OAuth 登录，必须使用本地管理员账号。
 2. **IdP 必须支持标准 OIDC 授权码流程。** 需要提供发现文档、授权/令牌接口、JWKS，并支持 ID Token 的 Issuer、Audience、Nonce 和签名校验。当前令牌认证支持 `client_secret_basic`、`client_secret_post`，默认签名算法为 `RS256`。
 3. **演示业务数据默认关闭。** 权限、预设角色和系统管理员仍会初始化；只有 `SEED_DEMO_DATA=true` 且数据库没有任何项目时，才创建演示项目、版本、机台、子系统和一个已审核通过的 WKD。生产必须保持 `false`。
-4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。本次升级会新增用户部门、取消用户名唯一约束并删除旧 `users.name` 列；生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
+4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。从 v1.5 升级到 v1.6 没有数据库结构变化；如果从更早版本升级，应先核对 v1.5 的用户部门、用户名唯一约束和旧 `users.name` 列变更。生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
 5. **管理员密码环境变量主要用于首次初始化。** 管理员已经存在后，仅修改 `BOOTSTRAP_ADMIN_PASSWORD` 不会自动重置其密码。首次启动前就应设置高强度密码。当前版本没有自助修改密码页面或密码重置 API；已有管理员密码需由运维在后端通过受控脚本更新 PostgreSQL 中的 `users.password_hash`，具体方法见 10.5 节。
 6. **项目成员支持 Excel／CSV 批量初始化。** 系统管理员可导入任意项目，项目管理员只能导入具有 `project.member.manage` 权限的项目。页面下载的五列模板为工号、用户名、所属部门、项目角色、邮箱；工号和用户名必填，其他字段选填，角色为空时使用页面默认角色。单次最多 5000 行，必须先校验预览，全部无错误后才能确认；已有成员保留原角色。
+7. **生产配置采用 fail-closed。** 启动时会拒绝默认或过短的 JWT 密钥、管理员初始密码，以及默认数据库和 RustFS 凭证；配置不合法时进程直接退出，应先查看日志并修正 `.env`，不能通过关闭校验绕过。
+8. **管理员按唯一工号初始化。** `BOOTSTRAP_ADMIN_EMPLOYEE_ID` 默认 `E0001`，用于避免普通同名账号被误提权；本地登录支持用户名或唯一工号，用户名重名时必须使用工号。测试和生产应使用独立且受控的管理员工号。
+9. **构建仍有同步请求边界。** 单次最多 200 个 WKD，普通附件总量默认 2 GB；当前没有后台任务、进度查询和构建幂等。Nginx 示例读取超时提高到 600 秒只是缓解，超大或慢构建仍应控制批次，后续需任务化。
 
 ## 4. 部署前检查清单
 
@@ -96,17 +99,17 @@ tar \
   --exclude='./artifacts' \
   --exclude='./backend/.env' \
   --exclude='*.log' \
-  -czf /tmp/wmp-v1.5.0.tar.gz .
+  -czf /tmp/wmp-v1.6.0.tar.gz .
 ```
 
 计算校验值并传到目标服务器：
 
 ```bash
-shasum -a 256 /tmp/wmp-v1.5.0.tar.gz
-scp /tmp/wmp-v1.5.0.tar.gz <用户>@<服务器>:/tmp/
+shasum -a 256 /tmp/wmp-v1.6.0.tar.gz
+scp /tmp/wmp-v1.6.0.tar.gz <用户>@<服务器>:/tmp/
 ```
 
-服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.5.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
+服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.6.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
 
 ## 6. 初始化 PostgreSQL 与 RustFS
 
@@ -154,7 +157,7 @@ CREATE DATABASE wmp_prod OWNER wmp_prod;
 ```bash
 sudo useradd --system --home /opt/wmp-test --shell /usr/sbin/nologin wmptest
 sudo mkdir -p /opt/wmp-test/app
-sudo tar -xzf /tmp/wmp-v1.5.0.tar.gz -C /opt/wmp-test/app
+sudo tar -xzf /tmp/wmp-v1.6.0.tar.gz -C /opt/wmp-test/app
 sudo chown -R wmptest:wmptest /opt/wmp-test
 
 sudo apt-get update
@@ -191,6 +194,7 @@ DATABASE_URL=postgresql+psycopg://wmp_test:<URL编码后的测试密码>@10.10.0
 JWT_SECRET=<独立的至少32字节随机值>
 JWT_EXPIRE_MINUTES=720
 BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_EMPLOYEE_ID=E0001
 BOOTSTRAP_ADMIN_PASSWORD=<独立测试管理员强密码>
 SEED_DEMO_DATA=true
 OAUTH_ENABLED=false
@@ -202,6 +206,7 @@ RUSTFS_BUCKET=wmp-test
 RUSTFS_REGION=us-east-1
 PRESIGN_EXPIRE_SECONDS=300
 MAX_ATTACHMENT_SIZE=524288000
+MAX_BUILD_ATTACHMENT_BYTES=2147483648
 ATTACHMENT_SESSION_EXPIRE_HOURS=24
 ATTACHMENT_MULTIPART_THRESHOLD=67108864
 ATTACHMENT_MULTIPART_PART_SIZE=16777216
@@ -259,7 +264,7 @@ server {
 
     root /opt/wmp-test/app/dist;
     index index.html;
-    client_max_body_size 20m;
+    client_max_body_size 160m;
 
     location / {
         try_files $uri $uri/ /index.html;
@@ -272,7 +277,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
+        proxy_read_timeout 600s;
     }
 
     location = /health {
@@ -318,7 +323,7 @@ curl --fail http://127.0.0.1:8080/openapi.json -o /tmp/wmp-test-openapi.json
 ```bash
 sudo useradd --system --home /opt/wmp --shell /usr/sbin/nologin wmp
 sudo mkdir -p /opt/wmp/app
-sudo tar -xzf /tmp/wmp-v1.5.0.tar.gz -C /opt/wmp/app
+sudo tar -xzf /tmp/wmp-v1.6.0.tar.gz -C /opt/wmp/app
 sudo chown -R wmp:wmp /opt/wmp
 cd /opt/wmp/app
 python3 -m venv .venv
@@ -342,6 +347,7 @@ DATABASE_URL=postgresql+psycopg://wmp_prod:<URL编码后的生产密码>@10.10.0
 JWT_SECRET=<生产独立高强度随机值>
 JWT_EXPIRE_MINUTES=720
 BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_EMPLOYEE_ID=E0001
 BOOTSTRAP_ADMIN_PASSWORD=<首次初始化使用的生产管理员强密码>
 SEED_DEMO_DATA=false
 OAUTH_ENABLED=true
@@ -364,6 +370,7 @@ RUSTFS_BUCKET=wmp-prod
 RUSTFS_REGION=us-east-1
 PRESIGN_EXPIRE_SECONDS=300
 MAX_ATTACHMENT_SIZE=524288000
+MAX_BUILD_ATTACHMENT_BYTES=2147483648
 ATTACHMENT_SESSION_EXPIRE_HOURS=24
 ATTACHMENT_MULTIPART_THRESHOLD=67108864
 ATTACHMENT_MULTIPART_PART_SIZE=16777216
@@ -444,7 +451,7 @@ server {
 
     root /opt/wmp/app/dist;
     index index.html;
-    client_max_body_size 20m;
+    client_max_body_size 160m;
 
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
@@ -461,7 +468,7 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
+        proxy_read_timeout 600s;
     }
 
     location = /health {
@@ -478,7 +485,7 @@ server {
 }
 ```
 
-将 `allow` 网段替换为实际管理员网段。证书私钥仅允许 Nginx 管理账号读取。应用 API 的 JSON 请求不承载 500 MB 附件本体，附件通过 RustFS 预签名地址直传，因此 `client_max_body_size 20m` 不限制附件大小；单个附件 500 MB 限制由后端校验。
+将 `allow` 网段替换为实际管理员网段。证书私钥仅允许 Nginx 管理账号读取。普通附件通过 RustFS 预签名地址直传，`client_max_body_size 160m` 不限制单个 500 MB 普通附件；该值用于容纳原子操作文件的 Base64 放大、其余 WKD 字段和请求开销。单个原子文件 20 MB、单 WKD 原子文件总量 100 MB，仍由后端校验。`proxy_read_timeout 600s` 仅是同步构建的临时缓解，超过代理或客户端时限的大构建仍可能失败，应控制构建批次并规划后台任务化。
 
 ```bash
 sudo nginx -t
@@ -496,7 +503,8 @@ curl --fail https://wmp.example.internal/health
 4. 在成员管理下载五列模板，先用包含重复工号或无效角色的文件确认逐行错误会阻止导入，再用正确文件完成预览和确认；重复导入时已有成员保留原角色，不生成重复用户或成员，并用项目管理员账号验证不能导入无权限项目。
 5. 用非授权账号验证按钮不可用时，服务端同样返回 `403`，不能只检查前端按钮隐藏。
 6. 生产环境确认普通本地账号不能绕过 OAuth 登录。
-7. 检查 `/openapi.json`、`/docs`；生产确认接口文档仅管理员网段可访问。
+7. 展开“构建 / 发布”子菜单后收起侧栏，确认没有子菜单或内部元素越界；收起状态悬停图标不应自动弹出浮层，点击后应能进入调试构建和正式构建。
+8. 检查 `/openapi.json`、`/docs`；生产确认接口文档仅管理员网段可访问。
 
 > Swagger UI 和 ReDoc 的默认前端资源可能来自公共 CDN。完全隔离互联网的内网中，`openapi.json` 和接口调用不受影响，但文档页面样式/脚本可能需要额外做本地静态化；不要将“Swagger 页面打不开”误判为后端接口失败。
 
@@ -523,12 +531,15 @@ curl --fail https://wmp.example.internal/health
    ls /tmp/wmp-package-check
    cat /tmp/wmp-package-check/MANIFEST.json
    ```
-   应包含 `wmp_entry.py`、`MANIFEST.json`、`WKD_LIST.json`、`README.md` 和 `packages/<WKD编号>/`。
-4. 在隔离测试目录执行，不得直接对生产设备随意运行 WKD 中的 Linux 命令：
+   应包含 `wmp_entry.py`、`MANIFEST.json`、`WKD_LIST.json`、`README.md` 和 `packages/<WKD编号>/`。每个子包的 `files/` 保存原子操作上传文件，`attachments/` 保存已绑定且 `READY` 的 WKD 普通附件；人工操作 WKD 也应有独立子包。普通附件只随包携带，不由入口自动执行。
+4. 先列出包内 WKD 和阶段，再在隔离测试目录执行；不得直接对生产设备随意运行 WKD 中的 Linux 命令：
    ```bash
-   python3 /tmp/wmp-package-check/wmp_entry.py <WKD编号> <阶段参数> --target-root /tmp/wmp-sandbox
+   python3 /tmp/wmp-package-check/wmp_entry.py --list
+   python3 /tmp/wmp-package-check/wmp_entry.py <阶段参数> --target-root /tmp/wmp-sandbox
+   # 只验证一个 WKD 时：
+   python3 /tmp/wmp-package-check/wmp_entry.py <阶段参数> --wkd <WKD编号> --target-root /tmp/wmp-sandbox
    ```
-   `--target-root` 仅用于隔离验证；正式执行前应审查 WKD 内容、命令、目标路径和权限。
+   默认按 `MANIFEST.json` 顺序执行所有匹配阶段的 WKD，并跳过不匹配项；旧的“WKD 编号 + 阶段参数”双位置参数调用仍兼容。`--target-root` 仅用于隔离验证；正式执行前应审查 WKD 内容、命令、目标路径和权限。
 5. 验证正式构建只包含所选项目、所选机台下全部已勾选且状态为 `APPROVED` 的 WKD。
 
 ## 10. 日常运维、升级与回滚
@@ -631,6 +642,7 @@ PY
 - 生产无演示业务数据，OAuth 自动注册、初始化占位项目隔离与真实项目角色分配已核对。
 - HTTPS、独立密钥、私有 Bucket、网络访问控制和管理员唯一性符合要求。
 - WKD 状态流转、属性历史、附件、调试/正式构建和下载均通过真实服务验证。
+- 通过内网实际访问地址验证新建 WKD 时可添加原子操作；不要只用 localhost 验证浏览器兼容性。详情页责任人和当前处理人应显示“用户名 工号”，详细流程的加粗、斜体、下划线和字体颜色应实际生效。
 - 制品已解包并在隔离环境执行验证。
 - 数据库与 RustFS 均已备份，且至少完成一次恢复演练。
 - 监控、日志、升级和回滚责任明确。

@@ -204,15 +204,43 @@ function reset() {
   filters.project_ids = currentScope === 'project' && defaultProjectId() ? [defaultProjectId()] : []
   load()
 }
-function csvCell(value: unknown) { return `"${String(value ?? '').replaceAll('"', '""')}"` }
-async function exportCsv() {
+const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+function excelCell(value: unknown) {
+  const text = String(value ?? '')
+  return /^[\s]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text) ? `'${text}` : text
+}
+async function exportXlsx() {
   exporting.value = true
   try {
     if (store.demoMode) {
       const rows = demoRows()
-      const csv = 'WKD编号,标题,项目,所属版本,问题发现版本,规划解决版本,机台,子系统,责任人,当前处理人,执行类型,活动场景,措施类型,执行阶段,自定义阶段,状态,创建时间,更新时间\n' + rows.map(item => [displayNumber(item), item.title, item.project, item.version, item.foundVersion, item.plannedVersion, item.machine, item.subsystem, item.owner, item.currentHandler, executionNames.find(([value]) => value === item.executionType)?.[1], item.activityScene, item.measureType, stageNames.find(([value]) => value === item.stage)?.[1], item.customStageName, statusNames.find(([value]) => value === item.status)?.[1], item.createdAt, item.updatedAt].map(csvCell).join(',')).join('\n')
-      saveBlob('WMP统计明细.csv', new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' }))
-    } else saveBlob('wmp-statistics.csv', await api.download(`/statistics/export${queryString(filterParams())}`))
+      const { default: ExcelJS } = await import('exceljs')
+      const workbook = new ExcelJS.Workbook()
+      workbook.creator = 'WMP 规避措施管理平台'
+      workbook.created = new Date()
+      const sheet = workbook.addWorksheet('统计明细', { views: [{ state: 'frozen', ySplit: 1, showGridLines: false }] })
+      sheet.columns = [
+        { width: 20 }, { width: 36 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 16 },
+        { width: 24 }, { width: 20 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 18 },
+        { width: 18 }, { width: 16 }, { width: 20 }, { width: 18 }, { width: 22 }, { width: 22 },
+      ]
+      sheet.addRow(['WKD编号', '标题', '项目', '所属版本', '问题发现版本', '规划解决版本', '机台', '子系统', '责任人',
+        '当前处理人', '执行类型', '活动场景', '措施类型', '执行阶段', '自定义阶段', '状态', '创建时间', '更新时间'])
+      sheet.getRow(1).eachCell(cell => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF315EFB' } }
+      })
+      rows.forEach(item => sheet.addRow([
+        displayNumber(item), item.title, item.project, item.version, item.foundVersion, item.plannedVersion,
+        item.machine, item.subsystem, item.owner, item.currentHandler,
+        executionNames.find(([value]) => value === item.executionType)?.[1], item.activityScene, item.measureType,
+        stageNames.find(([value]) => value === item.stage)?.[1], item.customStageName,
+        statusNames.find(([value]) => value === item.status)?.[1], item.createdAt, item.updatedAt,
+      ].map(excelCell)))
+      sheet.autoFilter = { from: 'A1', to: { row: rows.length + 1, column: 18 } }
+      const buffer = await workbook.xlsx.writeBuffer()
+      saveBlob('WMP统计明细.xlsx', new Blob([buffer], { type: XLSX_MEDIA_TYPE }))
+    } else saveBlob('wmp-statistics.xlsx', await api.download(`/statistics/export${queryString(filterParams())}`))
     ElMessage.success(`已导出 ${stats.total} 条统计明细`)
   } catch (error) { ElMessage.error(errorMessage(error, '导出失败')) }
   finally { exporting.value = false }
@@ -231,7 +259,7 @@ watch(() => store.projectId, value => { if (scope.value === 'project') { filters
 <template>
   <div class="statistics-page" v-loading="loading">
     <PageHeader title="数据统计" :description="scopeDescription">
-      <el-button :loading="exporting" @click="exportCsv"><el-icon><Download /></el-icon>导出明细</el-button>
+      <el-button :loading="exporting" @click="exportXlsx"><el-icon><Download /></el-icon>导出 Excel</el-button>
     </PageHeader>
 
     <section class="surface-card stats-filter">
@@ -266,7 +294,7 @@ watch(() => store.projectId, value => { if (scope.value === 'project') { filters
 
     <section class="metric-grid stats-metrics">
       <div class="metric-card"><div class="metric-card-top"><span>WKD 总量</span><span class="metric-icon"><el-icon><Files /></el-icon></span></div><div class="metric-card-value"><strong>{{ stats.total }}</strong><small>条记录</small></div><div class="metric-card-note">符合当前全部筛选条件</div></div>
-      <div class="metric-card"><div class="metric-card-top"><span>审核通过率</span><span class="metric-icon green"><el-icon><CircleCheck /></el-icon></span></div><div class="metric-card-value"><strong>{{ stats.approval_rate.toFixed(1) }}<em>%</em></strong><small>{{ stats.approved }} 条通过</small></div><div class="metric-card-note">审核通过数量 / 筛选总量</div></div>
+      <div class="metric-card"><div class="metric-card-top"><span>当前审核通过占比</span><span class="metric-icon green"><el-icon><CircleCheck /></el-icon></span></div><div class="metric-card-value"><strong>{{ stats.approval_rate.toFixed(1) }}<em>%</em></strong><small>{{ stats.approved }} 条通过</small></div><div class="metric-card-note">审核通过数量 / 筛选总量</div></div>
       <div class="metric-card"><div class="metric-card-top"><span>待处理</span><span class="metric-icon orange"><el-icon><Clock /></el-icon></span></div><div class="metric-card-value"><strong>{{ stats.pending }}</strong><small>条记录</small></div><div class="metric-card-note">自验证、审核与确认禁用</div></div>
       <div class="metric-card"><div class="metric-card-top"><span>平均处理时长</span><span class="metric-icon violet"><el-icon><Timer /></el-icon></span></div><div class="metric-card-value"><strong>{{ stats.average_processing_days.toFixed(1) }}<em>天</em></strong><small>已完成审核</small></div><div class="metric-card-note">从创建到首次审核通过</div></div>
     </section>

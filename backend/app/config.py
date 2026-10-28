@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     jwt_secret: str = 'development-only-change-me'
     jwt_expire_minutes: int = 720
     bootstrap_admin_username: str = 'admin'
+    bootstrap_admin_employee_id: str = 'E0001'
     bootstrap_admin_password: str = 'wmp2026'
     seed_demo_data: bool = False
     oauth_enabled: bool = False
@@ -31,6 +32,7 @@ class Settings(BaseSettings):
     rustfs_region: str = 'us-east-1'
     presign_expire_seconds: int = 300
     max_attachment_size: int = 500 * 1024 * 1024
+    max_build_attachment_bytes: int = 2 * 1024 * 1024 * 1024
     attachment_session_expire_hours: int = 24
     attachment_multipart_threshold: int = 64 * 1024 * 1024
     attachment_multipart_part_size: int = 16 * 1024 * 1024
@@ -40,6 +42,23 @@ class Settings(BaseSettings):
     @property
     def origins(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(',')]
+
+
+def validate_production_settings(settings: Settings) -> None:
+    if settings.environment.lower() != 'production':
+        return
+    problems = []
+    if settings.jwt_secret == 'development-only-change-me' or len(settings.jwt_secret) < 32:
+        problems.append('JWT_SECRET 必须替换为至少 32 字符的随机密钥')
+    if settings.bootstrap_admin_password == 'wmp2026' or len(settings.bootstrap_admin_password) < 12:
+        problems.append('BOOTSTRAP_ADMIN_PASSWORD 必须替换为至少 12 字符的强密码')
+    if settings.rustfs_access_key == 'wmp' or settings.rustfs_secret_key == 'wmp-secret':
+        problems.append('RUSTFS_ACCESS_KEY / RUSTFS_SECRET_KEY 不能使用默认凭证')
+    if 'wmp:wmp@' in settings.database_url:
+        problems.append('DATABASE_URL 不能使用默认数据库凭证')
+    if problems:
+        raise RuntimeError('生产环境配置校验失败：' + '；'.join(problems))
+
 
 @lru_cache
 def get_settings() -> Settings:

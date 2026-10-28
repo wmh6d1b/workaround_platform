@@ -1,7 +1,7 @@
 {
   "name": "wmp-workaround-platform",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -17,6 +17,7 @@
     "dayjs": "^1.11.19",
     "echarts": "^6.0.0",
     "element-plus": "^2.11.8",
+    "exceljs": "^4.4.0",
     "hash-wasm": "^4.12.0",
     "vue": "^3.5.24",
     "vue-router": "^4.6.3"
@@ -26,5 +27,8 @@
     "typescript": "~5.9.3",
     "vite": "^7.2.4",
     "vue-tsc": "^3.1.5"
+  },
+  "overrides": {
+    "uuid": "11.1.1"
   }
 }

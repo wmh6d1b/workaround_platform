@@ -3,7 +3,7 @@
   "info": {
     "title": "WMP 规避措施管理平台",
     "description": "WKD 全生命周期、原子操作编排、项目级 RBAC、构建制品和 RustFS 文件接口。除认证与健康检查外，所有接口均需 Bearer Token，并在服务端执行按钮权限校验。",
-    "version": "1.5.0"
+    "version": "1.6.0"
   },
   "paths": {
     "/api/v1/auth/login": {
@@ -11,7 +11,7 @@
         "tags": [
           "认证与用户"
         ],
-        "summary": "本地账号登录（开发调试或生产系统管理员）",
+        "summary": "本地账号登录，支持用户名或唯一工号；用户名重名时须用工号（开发调试或生产系统管理员）",
         "operationId": "login_api_v1_auth_login_post",
         "requestBody": {
           "content": {
@@ -733,7 +733,7 @@
         "tags": [
           "数据统计"
         ],
-        "summary": "按相同条件导出完整统计明细 CSV（所有已登录用户）",
+        "summary": "按相同条件导出完整统计明细 XLSX（所有已登录用户）",
         "operationId": "export_statistics_api_v1_statistics_export_get",
         "security": [
           {
@@ -1085,7 +1085,7 @@
         "tags": [
           "WKD 全生命周期"
         ],
-        "summary": "查询 WKD 列表（搜索、标签及机台、子系统、责任人、执行类型、活动场景、措施类型、阶段、状态多选筛选）",
+        "summary": "查询轻量 WKD 列表，不返回 operations；支持搜索、标签及多维多选筛选",
         "operationId": "list_wkds_api_v1_wkds_get",
         "security": [
           {
@@ -1444,7 +1444,7 @@
         "tags": [
           "WKD 全生命周期"
         ],
-        "summary": "查询当前项目可指派的软件经理",
+        "summary": "查询当前项目可指派的软件经理，包含有效的全局软件经理",
         "operationId": "list_reviewers_api_v1_wkds_reviewers_get",
         "security": [
           {
@@ -1489,7 +1489,7 @@
         "tags": [
           "WKD 全生命周期"
         ],
-        "summary": "获取 WKD 详情、操作编排和字段属性",
+        "summary": "获取 WKD 详情、完整操作编排和字段属性",
         "operationId": "get_wkd_api_v1_wkds__wkd_id__get",
         "security": [
           {
@@ -1534,7 +1534,7 @@
         "tags": [
           "WKD 全生命周期"
         ],
-        "summary": "状态流转；提交类操作携带完整数据，指派类操作必须传入 manager_id",
+        "summary": "状态流转；所有操作必须携带 lock_version，提交类携带完整数据，指派类携带 manager_id",
         "operationId": "transition_api_v1_wkds__wkd_id__transitions__action__post",
         "security": [
           {
@@ -1644,7 +1644,7 @@
         "tags": [
           "调试构建、正式构建与制品"
         ],
-        "summary": "查询可构建 WKD；正式构建按项目和机台返回全部 APPROVED",
+        "summary": "查询轻量可构建 WKD 列表，不返回 operations；正式构建仅返回 APPROVED",
         "operationId": "eligible_api_v1_builds_eligible_get",
         "security": [
           {
@@ -1722,7 +1722,7 @@
         "tags": [
           "调试构建、正式构建与制品"
         ],
-        "summary": "执行调试或正式构建，生成 tar.gz 并上传 RustFS",
+        "summary": "同步执行构建；1～200 个不重复 WKD，普通附件总量默认不超过 2 GB",
         "operationId": "build_api_v1_builds__kind__post",
         "security": [
           {
@@ -1777,7 +1777,7 @@
         "tags": [
           "调试构建、正式构建与制品"
         ],
-        "summary": "查询基线制品或构建记录",
+        "summary": "查询轻量制品记录，不返回明细中的 WKD snapshot 正文",
         "operationId": "artifacts_api_v1_artifacts_get",
         "security": [
           {
@@ -3515,6 +3515,7 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 200,
             "minItems": 1,
             "title": "Wkd Ids"
           }
@@ -3652,7 +3653,8 @@
           "issue_no": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -3663,7 +3665,8 @@
           "requirement_no": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -3710,6 +3713,7 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 1000,
             "minItems": 1,
             "title": "Machine Ids"
           },
@@ -3768,7 +3772,9 @@
           "custom_stage_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100,
+                "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"
               },
               {
                 "type": "null"
@@ -3845,12 +3851,16 @@
         "properties": {
           "name": {
             "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
             "title": "Name"
           },
           "code": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 80,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
               },
               {
                 "type": "null"
@@ -3882,13 +3892,23 @@
           },
           "status": {
             "type": "string",
+            "enum": [
+              "ENABLED",
+              "DISABLED",
+              "STOPPED",
+              "DEVELOPING",
+              "RELEASED",
+              "ARCHIVED",
+              "INITIALIZING"
+            ],
             "title": "Status",
             "default": "ENABLED"
           },
           "number": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 60
               },
               {
                 "type": "null"
@@ -3899,7 +3919,8 @@
           "model": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -3910,7 +3931,8 @@
           "location": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 120
               },
               {
                 "type": "null"
@@ -3921,7 +3943,8 @@
           "baseline_date": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "format": "date"
               },
               {
                 "type": "null"
@@ -4193,14 +4216,8 @@
             "title": "Note"
           },
           "lock_version": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "integer",
+            "minimum": 1.0,
             "title": "Lock Version"
           },
           "manager_id": {
@@ -4226,6 +4243,9 @@
           }
         },
         "type": "object",
+        "required": [
+          "lock_version"
+        ],
         "title": "TransitionInput"
       },
       "UploadCompleteInput": {
@@ -4523,7 +4543,8 @@
           "issue_no": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -4534,7 +4555,8 @@
           "requirement_no": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100
               },
               {
                 "type": "null"
@@ -4581,6 +4603,7 @@
               "type": "string"
             },
             "type": "array",
+            "maxItems": 1000,
             "minItems": 1,
             "title": "Machine Ids"
           },
@@ -4639,7 +4662,9 @@
           "custom_stage_name": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 100,
+                "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$"
               },
               {
                 "type": "null"

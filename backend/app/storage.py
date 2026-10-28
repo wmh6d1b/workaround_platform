@@ -29,6 +29,11 @@ def head_size(key: str) -> int:
     return int(client.head_object(Bucket=settings.rustfs_bucket, Key=key)['ContentLength'])
 
 
+def read_object(key: str):
+    """返回附件对象流，由调用方读取并关闭，避免一次性加载大文件。"""
+    return client.get_object(Bucket=settings.rustfs_bucket, Key=key)['Body']
+
+
 def delete_object(key: str) -> None:
     client.delete_object(Bucket=settings.rustfs_bucket, Key=key)
 

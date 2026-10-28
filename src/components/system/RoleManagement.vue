@@ -5,6 +5,7 @@ import type { TreeInstance } from 'element-plus'
 import { api, errorMessage, queryString } from '../../api'
 import { store } from '../../store'
 import { isGlobalAdmin } from '../../permissions'
+import { createUuid } from '../../utils/id'
 
 interface Role { id: string; name: string; description: string; built_in: boolean; permissions: string[] }
 interface Permission { code: string; module: string; description: string }
@@ -66,7 +67,7 @@ async function addRole() {
   try {
     let id = ''
     if (store.demoMode) {
-      id = crypto.randomUUID()
+      id = createUuid()
       store.options.roles.push({ id, name:newRole.name.trim(), description:newRole.description, built_in:false })
     } else {
       const result = await api.post<{ id: string }>('/roles', { name:newRole.name.trim(), description:newRole.description, permissions:[] })

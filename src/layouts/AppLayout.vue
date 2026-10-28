@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { can, ensureOptions, isInitializationProject, logout, refreshIdentity, refreshPermissions, selectProject, store } from '../store'
@@ -8,8 +8,6 @@ import { firstSystemPath, hasSystemAccess as checkSystemAccess } from '../permis
 
 const route = useRoute()
 const router = useRouter()
-const notificationRows = ref<{ id: string; title: string; content?: string }[]>([])
-const unread = ref(0)
 const activeMenu = computed(() => route.path.startsWith('/build') ? route.path : route.path.startsWith('/wkd') ? '/workbench' : route.path)
 const breadcrumb = computed(() => route.path.startsWith('/build') ? ['构建 / 发布', route.meta.title as string] : [route.meta.title as string])
 const hasSystemAccess = computed(checkSystemAccess)
@@ -27,21 +25,6 @@ function unauthorized() {
 }
 function versionChanged(id: string) {
   store.version = store.options.versions.find(item => item.id === id)?.name || ''
-}
-async function loadNotifications() {
-  try {
-    if (!store.demoMode) {
-      const result = await api.get<{ items: typeof notificationRows.value; unread: number }>('/notifications')
-      notificationRows.value = result.items
-      unread.value = result.unread
-    }
-  } catch (error) { ElMessage.error(errorMessage(error, '通知加载失败')) }
-}
-async function markRead() {
-  try {
-    if (!store.demoMode) await api.post('/notifications/read')
-    unread.value = 0
-  } catch (error) { ElMessage.error(errorMessage(error, '通知状态更新失败')) }
 }
 function guardBusinessRoute() {
   if (isInitializationProject.value && ['workbench', 'wkd-new', 'wkd-detail', 'debug-build', 'release-build'].includes(String(route.name))) {
@@ -68,10 +51,14 @@ onBeforeUnmount(() => window.removeEventListener('wmp:unauthorized', unauthorize
     <aside class="app-sidebar">
       <router-link to="/" class="brand"><div class="brand-mark"><span>W</span></div><div v-show="!store.sidebarCollapsed" class="brand-copy"><strong>WMP</strong><small>规避措施管理平台</small></div></router-link>
       <div class="sidebar-caption" v-show="!store.sidebarCollapsed">工作空间</div>
-      <el-menu :default-active="activeMenu" :collapse="store.sidebarCollapsed" :collapse-transition="false" router class="sidebar-menu">
+      <el-menu :default-active="activeMenu" :collapse="store.sidebarCollapsed" :collapse-transition="false" menu-trigger="click" router class="sidebar-menu">
         <el-menu-item v-if="can('home.view')" index="/"><el-icon><HomeFilled /></el-icon><template #title>首页</template></el-menu-item>
         <el-menu-item v-if="can('wkd.view') && !isInitializationProject" index="/workbench"><el-icon><Grid /></el-icon><template #title>工作台</template></el-menu-item>
-        <el-sub-menu v-if="!isInitializationProject && (can('build.debug.view') || can('build.release.view'))" index="/build"><template #title><el-icon><Box /></el-icon><span>构建 / 发布</span></template><el-menu-item v-if="can('build.debug.view')" index="/build/debug">调试构建</el-menu-item><el-menu-item v-if="can('build.release.view')" index="/build/release">正式构建</el-menu-item></el-sub-menu>
+        <el-sub-menu v-if="!store.sidebarCollapsed && !isInitializationProject && (can('build.debug.view') || can('build.release.view'))" index="/build"><template #title><el-icon><Box /></el-icon><span>构建 / 发布</span></template><el-menu-item v-if="can('build.debug.view')" index="/build/debug">调试构建</el-menu-item><el-menu-item v-if="can('build.release.view')" index="/build/release">正式构建</el-menu-item></el-sub-menu>
+        <el-dropdown v-else-if="!isInitializationProject && (can('build.debug.view') || can('build.release.view'))" trigger="click" placement="right-start" class="sidebar-build-collapsed" @command="router.push">
+          <button type="button" class="sidebar-build-collapsed__button" :class="{ 'is-active': route.path.startsWith('/build') }" title="构建 / 发布" aria-label="构建 / 发布"><el-icon><Box /></el-icon></button>
+          <template #dropdown><el-dropdown-menu><el-dropdown-item v-if="can('build.debug.view')" command="/build/debug">调试构建</el-dropdown-item><el-dropdown-item v-if="can('build.release.view')" command="/build/release">正式构建</el-dropdown-item></el-dropdown-menu></template>
+        </el-dropdown>
         <el-menu-item index="/statistics"><el-icon><DataAnalysis /></el-icon><template #title>数据统计</template></el-menu-item>
         <el-menu-item v-if="hasSystemAccess" :index="firstSystemPath()"><el-icon><Setting /></el-icon><template #title>系统管理</template></el-menu-item>
       </el-menu>
@@ -80,9 +67,8 @@ onBeforeUnmount(() => window.removeEventListener('wmp:unauthorized', unauthorize
 
     <div class="app-body">
       <header class="topbar">
-        <div class="topbar-context"><span class="context-label">当前上下文</span><el-select :model-value="store.projectId" class="global-select project-select" aria-label="选择项目" :loading="store.optionsLoading" @change="selectProject"><el-option v-for="item in store.options.projects" :key="item.id" :label="item.name" :value="item.id" /></el-select><span class="context-divider" /><el-select v-model="store.versionId" class="global-select version-select" aria-label="选择版本" @change="versionChanged"><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></div>
+        <div class="topbar-context"><span class="context-label">当前上下文</span><el-select :model-value="store.projectId" class="global-select project-select" aria-label="选择项目" filterable :loading="store.optionsLoading" @change="selectProject"><el-option v-for="item in store.options.projects" :key="item.id" :label="item.name" :value="item.id" /></el-select><span class="context-divider" /><el-select v-model="store.versionId" class="global-select version-select" aria-label="选择版本" filterable @change="versionChanged"><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></div>
         <div class="topbar-right">
-          <el-popover placement="bottom-end" :width="330" trigger="click" @show="loadNotifications"><template #reference><button class="icon-button notification-button" title="通知"><el-icon><Bell /></el-icon><i v-if="unread" /></button></template><div class="notification-panel"><div><strong>通知</strong><el-button v-if="unread" text type="primary" @click="markRead">全部已读</el-button></div><div v-if="notificationRows.length"><div v-for="item in notificationRows" :key="item.id"><strong>{{ item.title }}</strong><p>{{ item.content }}</p></div></div><el-empty v-else description="暂无新通知" :image-size="60" /></div></el-popover>
           <span class="topbar-separator" />
           <el-dropdown trigger="click" @command="signOut"><button class="user-trigger"><el-avatar :size="34" class="user-avatar">{{ store.session?.username.slice(0, 1) }}</el-avatar><span class="user-meta"><strong>{{ store.session?.username }}</strong><small>{{ store.session?.role }}</small></span><el-icon class="user-chevron"><ArrowDown /></el-icon></button><template #dropdown><el-dropdown-menu><div class="user-dropdown-head"><strong>{{ store.session?.username }}</strong><span>工号 {{ store.session?.employeeId }}</span></div><el-dropdown-item divided command="logout"><el-icon><SwitchButton /></el-icon>退出登录</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
         </div>

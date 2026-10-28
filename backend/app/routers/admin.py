@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, Upl
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from ..db import get_db
-from ..deps import authorize, current_user, ensure_operational_project, require_superuser
+from ..deps import accessible_project_ids, authorize, current_user, ensure_operational_project, require_superuser
 from ..member_import import apply_import, import_template, parse_import_file, validate_import_rows
 from ..models import Machine, Permission, Project, ProjectMember, Role, Subsystem, User, Version
 from ..schemas import BulkImportInput, EntityInput, GlobalRoleInput, MemberInput, RoleInput, UserInput
@@ -66,12 +66,12 @@ def ensure_project_admin_retained(db: Session, project_id: str, member: ProjectM
 @router.get('/bootstrap/options', summary='获取可访问项目及版本、机台、子系统、责任人与可分配角色选项')
 def options(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(current_user)):
     projects = db.scalars(select(Project)).all()
-    if not user.is_superuser:
-        allowed = set(db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)).all())
+    allowed = accessible_project_ids(db, user)
+    if allowed is not None:
         projects = [x for x in projects if x.id in allowed]
     accessible = {x.id for x in projects}
     if project_id and project_id not in accessible:
-        raise HTTPException(403, '你不是该项目成员')
+        raise HTTPException(403, '你无权访问该项目')
     roles = db.scalars(select(Role)).all()
     if not user.is_superuser:
         roles = [role for role in roles if role.name != '系统管理员']
@@ -90,8 +90,10 @@ def options(project_id: str | None = None, db: Session = Depends(get_db), user: 
         member_query = member_query.where(ProjectMember.project_id.in_(accessible))
     members = db.scalars(member_query).unique().all()
     users = {x.user.id: x.user for x in members}
-    if user.is_superuser:
-        users[user.id] = user
+    if allowed is None:
+        global_users = db.scalars(select(User).where(User.is_active.is_(True), User.global_role_id.is_not(None))).all()
+        users.update({x.id: x for x in global_users})
+    users[user.id] = user
     result['users'] = [{'id': x.id, 'username': x.username, 'employee_id': x.employee_id, 'department': x.department, 'email': x.email} for x in users.values()]
     return result
 
@@ -103,8 +105,8 @@ def list_business(resource: str, project_id: str | None = None, db: Session = De
         raise HTTPException(404, '未知业务资源')
     query = select(model)
     if resource == 'projects':
-        if not user.is_superuser:
-            allowed = set(db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)).all())
+        allowed = accessible_project_ids(db, user)
+        if allowed is not None:
             query = query.where(model.id.in_(allowed))
     else:
         if not project_id and not user.is_superuser:

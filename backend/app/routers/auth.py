@@ -20,9 +20,15 @@ def token_result(db: Session, user: User) -> TokenOut:
     return TokenOut(access_token=create_token(user.id), user=UserOut.model_validate(user), permissions=sorted(user_permissions(db, user)))
 
 
-@router.post('/login', response_model=TokenOut, summary='本地账号登录（开发调试或生产系统管理员）')
+@router.post('/login', response_model=TokenOut, summary='本地账号登录，支持用户名或唯一工号；用户名重名时须用工号（开发调试或生产系统管理员）')
 def login(payload: LoginInput, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.username == payload.username))
+    identifier = payload.username.strip()
+    user = db.scalar(select(User).where(User.employee_id == identifier))
+    if not user:
+        matches = list(db.scalars(select(User).where(User.username == identifier)).all())
+        if len(matches) > 1:
+            raise HTTPException(401, '用户名存在重复，请使用工号登录')
+        user = matches[0] if matches else None
     if not user or not verify_password(payload.password, user.password_hash) or not user.is_active:
         raise HTTPException(401, '账号或密码错误')
     if get_settings().environment == 'production' and not user.is_superuser:

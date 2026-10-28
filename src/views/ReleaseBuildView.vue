@@ -13,6 +13,7 @@ import { emptyWkdFilters, filterWkdRows, optionsFromWkdRows } from '../utils/wkd
 import type { WkdFilterKey } from '../utils/wkdFilters'
 import { loadWkdColumns, saveWkdColumns } from '../utils/tablePreferences'
 import { buildDemoExecutablePackage } from '../utils/demoPackage'
+import { createUuid } from '../utils/id'
 
 const machineId = ref('')
 const search = ref('')
@@ -59,7 +60,7 @@ async function build() {
   building.value = true
   try {
     if (store.demoMode) {
-      const id = crypto.randomUUID()
+      const id = createUuid()
       const content = await buildDemoExecutablePackage({ artifactId: id, kind: 'RELEASE', machineId: machineId.value, rows: selected.value })
       demoArtifacts.unshift({ id, number: `BUILD-DEMO-${Date.now()}`, filename: `WMP_RELEASE_${id.slice(0,8)}.tar.gz`, project_id: store.projectId, machine_id: machineId.value, type: 'RELEASE', size: content.size, sha256: content.sha256, builder_id: store.session?.id || '', created_at: new Date().toISOString(), items: selected.value.map((item, index) => ({ wkd_id: item.id, position: index + 1, snapshot: item.packageData })), demoBlob: content.blob })
     } else await api.post('/builds/release', { project_id: store.projectId, machine_id: machineId.value, wkd_ids: selected.value.map(item => item.id) })

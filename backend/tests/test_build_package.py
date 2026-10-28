@@ -36,9 +36,13 @@ def wkd_fixture(stage='post_start', custom_stage_name=None):
 
 
 class ExecutablePackageTests(unittest.TestCase):
-    def build(self, tmp, wkd=None):
+    def build(self, tmp, wkd=None, wkds=None, attachments=None):
+        selected_wkds = wkds if wkds is not None else [wkd or wkd_fixture()]
+        attachments = attachments or {}
+        contents = {item['object_key']: item['content'] for items in attachments.values() for item in items}
         content = build_executable_package(artifact_id='artifact-test', kind='debug', project_id='project-1',
-                                           machine_id='machine-1', wkds=[wkd or wkd_fixture()])
+                                           machine_id='machine-1', wkds=selected_wkds, attachments=attachments,
+                                           attachment_reader=lambda key: io.BytesIO(contents[key]))
         artifact = Path(tmp) / 'debug.tar.gz'
         artifact.write_bytes(content)
         output = Path(tmp) / 'unpacked'
@@ -96,6 +100,97 @@ class ExecutablePackageTests(unittest.TestCase):
                                       '--target-root', str(Path(tmp) / 'correct')], capture_output=True, text=True, timeout=30)
             self.assertEqual(correct.returncode, 0, correct.stderr)
             self.assertIn('hello\nworld\n', correct.stdout)
+
+    def test_default_stage_execution_follows_manifest_order(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            early = wkd_fixture()
+            early.update({'id': 'wkd-early', 'number': 'WKD202610270001', 'title': '先登记的 WKD',
+                          'created_at': '2026-10-27T08:00:00'})
+            late = wkd_fixture()
+            late.update({'id': 'wkd-late', 'number': 'WKD202610270002', 'title': '后登记的 WKD',
+                         'created_at': '2026-10-27T09:00:00'})
+            output = self.build(tmp, wkds=[early, late])
+            manifest = json.loads((output / 'MANIFEST.json').read_text())
+            self.assertEqual([item['package_name'] for item in manifest['packages']],
+                             ['WKD202610270001', 'WKD202610270002'])
+            result = subprocess.run([sys.executable, str(output / 'wmp_entry.py'), 'post_start',
+                                     '--target-root', str(Path(tmp) / 'sandbox')],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(result.stdout.index('先登记的 WKD'), result.stdout.index('后登记的 WKD'))
+            self.assertIn('共 2 个 WKD，跳过 0 个', result.stdout)
+
+    def test_list_skip_and_optional_single_wkd(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            start = wkd_fixture()
+            start.update({'id': 'wkd-start', 'number': 'WKD202610270001', 'title': '启动后措施'})
+            init = wkd_fixture(stage='post_init')
+            init.update({'id': 'wkd-init', 'number': 'WKD202610270002', 'title': '初始化后措施'})
+            output = self.build(tmp, wkds=[start, init])
+            listed = subprocess.run([sys.executable, str(output / 'wmp_entry.py'), '--list'],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn('WKD202610270001\tpost_start', listed.stdout)
+            self.assertIn('WKD202610270002\tpost_init', listed.stdout)
+            result = subprocess.run([sys.executable, str(output / 'wmp_entry.py'), 'post_start',
+                                     '--target-root', str(Path(tmp) / 'sandbox')],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('[SKIP] WKD202610270002', result.stdout)
+            self.assertIn('共 1 个 WKD，跳过 1 个', result.stdout)
+            single = subprocess.run([sys.executable, str(output / 'wmp_entry.py'), 'post_init',
+                                     '--wkd', 'WKD202610270002', '--target-root', str(Path(tmp) / 'single')],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(single.returncode, 0, single.stderr)
+            self.assertIn('初始化后措施', single.stdout)
+            self.assertNotIn('启动后措施', single.stdout)
+
+    def test_default_stage_without_matching_wkd_fails(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            output = self.build(tmp)
+            result = subprocess.run([sys.executable, str(output / 'wmp_entry.py'), 'post_init',
+                                     '--target-root', str(Path(tmp) / 'sandbox')],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('没有适用于阶段 post_init', result.stderr)
+
+    def test_manual_wkd_and_regular_attachments_are_packaged(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            manual = wkd_fixture()
+            manual.update({'execution_type': 'MANUAL', 'stage': None, 'custom_stage_name': None, 'operations': []})
+            payload = b'\x00\x01manual-attachment\xff'
+            attachments = {'wkd-test-1': [{
+                'id': 'attachment-1', 'object_key': 'attachments/session-1/attachment-1',
+                'filename': '人工操作说明.bin', 'size': len(payload), 'sha256': None,
+                'content_type': 'application/octet-stream', 'created_at': '2026-10-27T12:02:00', 'content': payload,
+            }]}
+            output = self.build(tmp, manual, attachments=attachments)
+            stored = output / 'packages/WKD202610270099/attachments/01/人工操作说明.bin'
+            self.assertEqual(stored.read_bytes(), payload)
+            package = json.loads((output / 'packages/WKD202610270099/package.json').read_text())
+            self.assertEqual(package['wkd']['execution_type'], 'MANUAL')
+            self.assertEqual(package['operations'], [])
+            self.assertEqual(package['attachments'][0]['stored_path'], 'attachments/01/人工操作说明.bin')
+            self.assertEqual(package['attachments'][0]['size'], len(payload))
+            self.assertEqual(len(package['attachments'][0]['sha256']), 64)
+            manifest = json.loads((output / 'MANIFEST.json').read_text())
+            self.assertEqual(manifest['packages'][0]['attachment_count'], 1)
+            detailed = json.loads((output / 'WKD_LIST.json').read_text())
+            self.assertEqual(detailed[0]['attachments'][0]['name'], '人工操作说明.bin')
+            listed = subprocess.run([sys.executable, str(output / 'wmp_entry.py'), '--list'],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            self.assertIn('WKD202610270099\t人工操作', listed.stdout)
+
+    def test_attachment_checksum_mismatch_fails_build(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            payload = b'actual-content'
+            attachments = {'wkd-test-1': [{
+                'id': 'attachment-1', 'object_key': 'attachments/session-1/attachment-1',
+                'filename': 'broken.txt', 'size': len(payload), 'sha256': '0' * 64, 'content': payload,
+            }]}
+            with self.assertRaisesRegex(ValueError, 'SHA-256 校验失败'):
+                self.build(tmp, attachments=attachments)
 
 
 if __name__ == '__main__':

@@ -23,6 +23,7 @@ const pageSize = ref(10)
 const rows = ref<Wkd[]>([])
 const total = ref(0)
 const loading = ref(false)
+let loadRequest = 0
 const counts = reactive<Record<string, number>>({ all: 0, pending: 0, created: 0, handled: 0 })
 const columnUserId = computed(() => store.session?.id || store.session?.username || 'anonymous')
 const visibleColumns = ref(loadWkdColumns('workbench', columnUserId.value))
@@ -47,6 +48,7 @@ function demoRows(tab = activeTab.value) {
 }
 
 async function load() {
+  const requestId = ++loadRequest
   loading.value = true
   try {
     if (store.demoMode) {
@@ -56,12 +58,16 @@ async function load() {
       rows.value = filtered.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value)
     } else {
       const result = await api.get<{ items: Record<string, unknown>[]; total: number; tab_counts: Record<string, number> }>(`/wkds${queryString({ project_id: store.projectId, version_id: store.versionId, machine_ids: filters.value.machine, subsystem_ids: filters.value.subsystem, owner_ids: filters.value.owner, execution_types: filters.value.executionType, activity_scenes: filters.value.activityScene, measure_types: filters.value.measureType, stages: filters.value.stage, statuses: filters.value.status, q: search.value.trim(), tab: activeTab.value, page: currentPage.value, page_size: pageSize.value })}`)
+      if (requestId !== loadRequest) return
       rows.value = result.items.map(normalizeWkd)
       total.value = result.total
       Object.assign(counts, result.tab_counts)
     }
-  } catch (error) { ElMessage.error(errorMessage(error, 'WKD 列表加载失败')) }
-  finally { loading.value = false }
+  } catch (error) {
+    if (requestId === loadRequest) ElMessage.error(errorMessage(error, 'WKD 列表加载失败'))
+  } finally {
+    if (requestId === loadRequest) loading.value = false
+  }
 }
 
 async function refresh() {

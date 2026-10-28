@@ -77,7 +77,8 @@ export function formatBytes(size: number) {
 export function normalizeWkd(item: any): Wkd {
   const machines = Array.isArray(item.machines) ? item.machines : []
   const firstOperation = item.operations?.[0]?.type
-  const operation = item.execution_type === 'MANUAL' ? '人工操作' : firstOperation === 'LINUX_COMMAND' ? 'Linux 命令' : firstOperation === 'SCRIPT' ? '脚本' : firstOperation === 'UPLOAD_FILE' ? '上传文件' : '未编排'
+  const operationFallback = Array.isArray(item.operations) ? '未编排' : '已编排'
+  const operation = item.execution_type === 'MANUAL' ? '人工操作' : firstOperation === 'LINUX_COMMAND' ? 'Linux 命令' : firstOperation === 'SCRIPT' ? '脚本' : firstOperation === 'UPLOAD_FILE' ? '上传文件' : operationFallback
   return {
     id: item.id,
     number: item.number,

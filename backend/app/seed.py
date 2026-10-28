@@ -101,16 +101,26 @@ def seed(db: Session) -> None:
             role.permissions = [permissions['home.view']]
         roles[name] = role
     settings = get_settings()
-    admin = db.scalar(select(User).where(User.username == settings.bootstrap_admin_username))
-    if not admin:
-        admin = User(username=settings.bootstrap_admin_username, employee_id='E0001', department='系统管理',
-                    password_hash=hash_password(settings.bootstrap_admin_password), is_superuser=True)
-        db.add(admin)
-        db.flush()
-    else:
-        # 修复旧库中初始化管理员被误存为普通用户或停用的情况；该账号不依赖项目成员关系。
+    admin_by_employee = db.scalar(select(User).where(User.employee_id == settings.bootstrap_admin_employee_id))
+    admin_by_username = db.scalar(select(User).where(User.username == settings.bootstrap_admin_username))
+    if admin_by_employee:
+        if admin_by_username and admin_by_username.id != admin_by_employee.id and admin_by_username.is_superuser:
+            raise RuntimeError('初始化管理员的用户名与工号分别对应不同账号，请先人工处理冲突')
+        admin = admin_by_employee
+        admin.username = settings.bootstrap_admin_username
         admin.is_superuser = True
         admin.is_active = True
+    elif admin_by_username:
+        if not admin_by_username.is_superuser:
+            raise RuntimeError('初始化管理员用户名已被普通账号占用，系统不会自动提权；请修改 BOOTSTRAP_ADMIN_USERNAME 或清理账号')
+        # 兼容旧库：只有已确认的超级管理员才能按用户名接管。
+        admin = admin_by_username
+        admin.is_active = True
+    else:
+        admin = User(username=settings.bootstrap_admin_username, employee_id=settings.bootstrap_admin_employee_id,
+                    department='系统管理', password_hash=hash_password(settings.bootstrap_admin_password), is_superuser=True)
+        db.add(admin)
+        db.flush()
     if settings.seed_demo_data and not db.scalar(select(Project.id).limit(1)):
         project = Project(name='晶圆检测设备', code='WAFER-INSPECT', owner_id=admin.id)
         db.add(project)
