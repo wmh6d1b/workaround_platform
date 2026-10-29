@@ -82,6 +82,7 @@ export async function refreshIdentity() {
 }
 
 let optionsRequest = 0
+let optionsInFlight: Promise<void> | null = null
 let permissionsRequest = 0
 
 export async function refreshPermissions() {
@@ -96,26 +97,31 @@ export async function refreshPermissions() {
 
 export async function ensureOptions(force = false) {
   if (!force && store.optionsReady) return
+  if (!force && optionsInFlight) return optionsInFlight
   const requestId = ++optionsRequest
   const projectId = store.projectId
-  store.optionsLoading = true
-  try {
-    const options = store.demoMode ? cloneDemoOptions() : await api.get<BootstrapOptions>(`/bootstrap/options${queryString({ project_id: force ? projectId : undefined })}`)
-    if (requestId !== optionsRequest) return
-    store.options = options
-    const project = store.options.projects.find(item => item.id === store.projectId) || store.options.projects[0]
-    if (project) {
-      store.projectId = project.id
-      store.project = project.name
+  const request = (async () => {
+    store.optionsLoading = true
+    try {
+      const options = store.demoMode ? cloneDemoOptions() : await api.get<BootstrapOptions>(`/bootstrap/options${queryString({ project_id: force ? projectId : undefined })}`)
+      if (requestId !== optionsRequest) return
+      store.options = options
+      const project = store.options.projects.find(item => item.id === store.projectId) || store.options.projects[0]
+      if (project) {
+        store.projectId = project.id
+        store.project = project.name
+      }
+      const versions = store.options.versions.filter(item => item.project_id === store.projectId)
+      const version = versions.find(item => item.id === store.versionId) || versions[0]
+      store.versionId = version?.id || ''
+      store.version = version?.number || version?.name || ''
+      store.optionsReady = true
+    } finally {
+      if (requestId === optionsRequest) store.optionsLoading = false
     }
-    const versions = store.options.versions.filter(item => item.project_id === store.projectId)
-    const version = versions.find(item => item.id === store.versionId) || versions[0]
-    store.versionId = version?.id || ''
-    store.version = version?.number || version?.name || ''
-    store.optionsReady = true
-  } finally {
-    if (requestId === optionsRequest) store.optionsLoading = false
-  }
+  })()
+  optionsInFlight = request
+  try { await request } finally { if (optionsInFlight === request) optionsInFlight = null }
 }
 
 export async function selectProject(projectId: string) {

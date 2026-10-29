@@ -1,11 +1,12 @@
 {
   "name": "wmp-workaround-platform",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "vue-tsc --noEmit && node scripts/build.mjs",
+    "test:frontend": "vitest run",
     "preview": "node scripts/preview.mjs",
     "backend:dev": "cd backend && ../.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload",
     "backend:test": "cd backend && ../.venv/bin/python -m unittest discover -s tests -v",
@@ -26,6 +27,7 @@
     "@vitejs/plugin-vue": "^6.0.2",
     "typescript": "~5.9.3",
     "vite": "^7.2.4",
+    "vitest": "^5.0.5",
     "vue-tsc": "^3.1.5"
   },
   "overrides": {

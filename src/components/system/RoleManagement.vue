@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TreeInstance } from 'element-plus'
 import { api, errorMessage, queryString } from '../../api'
-import { store } from '../../store'
+import { ensureOptions, store } from '../../store'
 import { isGlobalAdmin } from '../../permissions'
 import { createUuid } from '../../utils/id'
 
@@ -93,7 +93,10 @@ async function removeRole() {
     ElMessage.success('角色已删除')
   } catch (error) { ElMessage.error(errorMessage(error, '角色删除失败')) }
 }
-onMounted(load)
+onMounted(async () => {
+  try { await ensureOptions() } catch (error) { ElMessage.error(errorMessage(error, '基础选项加载失败')); return }
+  await load()
+})
 </script>
 
 <template>

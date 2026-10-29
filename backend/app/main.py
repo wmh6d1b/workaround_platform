@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await cleanup_task
 
-app = FastAPI(title=settings.app_name, version='1.6.0', lifespan=lifespan,
+app = FastAPI(title=settings.app_name, version='1.7.0', lifespan=lifespan,
     description='WKD 全生命周期、原子操作编排、项目级 RBAC、构建制品和 RustFS 文件接口。除认证与健康检查外，所有接口均需 Bearer Token，并在服务端执行按钮权限校验。',
     docs_url='/docs', redoc_url='/redoc', openapi_url='/openapi.json')
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=True,
@@ -91,4 +91,4 @@ app.include_router(admin.router, prefix='/api/v1')
 
 @app.get('/health', tags=['系统'], summary='服务健康检查')
 def health():
-    return {'status': 'ok', 'service': 'wmp-api', 'version': '1.6.0'}
+    return {'status': 'ok', 'service': 'wmp-api', 'version': '1.7.0'}

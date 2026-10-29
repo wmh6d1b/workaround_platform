@@ -1,8 +1,8 @@
-# WMP v1.6 部署文档
+# WMP v1.7 部署文档
 
 本文用于将当前工程部署到已具备 PostgreSQL 和 RustFS 的内网 Linux 服务器，分别说明**测试版本**与**生产版本**。示例系统为 Ubuntu/Debian，其他 Linux 发行版请替换对应的软件包安装命令和 systemd、Nginx 配置路径。
 
-> 适用代码版本：WMP v1.6.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
+> 适用代码版本：WMP v1.7.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
 
 ## 1. 架构与部署边界
 
@@ -49,7 +49,7 @@ FastAPI / Uvicorn
 1. **OIDC 负责身份认证，WMP 负责业务授权。** 已导入用户首次登录只按工号绑定 OIDC `sub`，后续按 `sub` 识别；用户名可以重复，不能作为账号绑定依据，IdP 必须返回工号。未注册的企业用户会自动创建 WMP 账号，并加入按需创建的“用户初始化”占位项目。该项目的“初始化用户”角色仅有首页权限，真实项目角色和按钮权限仍由 WMP 项目管理员分配。系统管理员不能通过 OAuth 登录，必须使用本地管理员账号。
 2. **IdP 必须支持标准 OIDC 授权码流程。** 需要提供发现文档、授权/令牌接口、JWKS，并支持 ID Token 的 Issuer、Audience、Nonce 和签名校验。当前令牌认证支持 `client_secret_basic`、`client_secret_post`，默认签名算法为 `RS256`。
 3. **演示业务数据默认关闭。** 权限、预设角色和系统管理员仍会初始化；只有 `SEED_DEMO_DATA=true` 且数据库没有任何项目时，才创建演示项目、版本、机台、子系统和一个已审核通过的 WKD。生产必须保持 `false`。
-4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。从 v1.5 升级到 v1.6 没有数据库结构变化；如果从更早版本升级，应先核对 v1.5 的用户部门、用户名唯一约束和旧 `users.name` 列变更。生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
+4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。从 v1.5 升级到 v1.7 没有数据库结构变化；如果从更早版本升级，应先核对 v1.5 的用户部门、用户名唯一约束和旧 `users.name` 列变更。生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
 5. **管理员密码环境变量主要用于首次初始化。** 管理员已经存在后，仅修改 `BOOTSTRAP_ADMIN_PASSWORD` 不会自动重置其密码。首次启动前就应设置高强度密码。当前版本没有自助修改密码页面或密码重置 API；已有管理员密码需由运维在后端通过受控脚本更新 PostgreSQL 中的 `users.password_hash`，具体方法见 10.5 节。
 6. **项目成员支持 Excel／CSV 批量初始化。** 系统管理员可导入任意项目，项目管理员只能导入具有 `project.member.manage` 权限的项目。页面下载的五列模板为工号、用户名、所属部门、项目角色、邮箱；工号和用户名必填，其他字段选填，角色为空时使用页面默认角色。单次最多 5000 行，必须先校验预览，全部无错误后才能确认；已有成员保留原角色。
 7. **生产配置采用 fail-closed。** 启动时会拒绝默认或过短的 JWT 密钥、管理员初始密码，以及默认数据库和 RustFS 凭证；配置不合法时进程直接退出，应先查看日志并修正 `.env`，不能通过关闭校验绕过。
@@ -99,17 +99,17 @@ tar \
   --exclude='./artifacts' \
   --exclude='./backend/.env' \
   --exclude='*.log' \
-  -czf /tmp/wmp-v1.6.0.tar.gz .
+  -czf /tmp/wmp-v1.7.0.tar.gz .
 ```
 
 计算校验值并传到目标服务器：
 
 ```bash
-shasum -a 256 /tmp/wmp-v1.6.0.tar.gz
-scp /tmp/wmp-v1.6.0.tar.gz <用户>@<服务器>:/tmp/
+shasum -a 256 /tmp/wmp-v1.7.0.tar.gz
+scp /tmp/wmp-v1.7.0.tar.gz <用户>@<服务器>:/tmp/
 ```
 
-服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.6.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
+服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.7.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
 
 ## 6. 初始化 PostgreSQL 与 RustFS
 
@@ -157,7 +157,7 @@ CREATE DATABASE wmp_prod OWNER wmp_prod;
 ```bash
 sudo useradd --system --home /opt/wmp-test --shell /usr/sbin/nologin wmptest
 sudo mkdir -p /opt/wmp-test/app
-sudo tar -xzf /tmp/wmp-v1.6.0.tar.gz -C /opt/wmp-test/app
+sudo tar -xzf /tmp/wmp-v1.7.0.tar.gz -C /opt/wmp-test/app
 sudo chown -R wmptest:wmptest /opt/wmp-test
 
 sudo apt-get update
@@ -323,7 +323,7 @@ curl --fail http://127.0.0.1:8080/openapi.json -o /tmp/wmp-test-openapi.json
 ```bash
 sudo useradd --system --home /opt/wmp --shell /usr/sbin/nologin wmp
 sudo mkdir -p /opt/wmp/app
-sudo tar -xzf /tmp/wmp-v1.6.0.tar.gz -C /opt/wmp/app
+sudo tar -xzf /tmp/wmp-v1.7.0.tar.gz -C /opt/wmp/app
 sudo chown -R wmp:wmp /opt/wmp
 cd /opt/wmp/app
 python3 -m venv .venv
@@ -505,6 +505,8 @@ curl --fail https://wmp.example.internal/health
 6. 生产环境确认普通本地账号不能绕过 OAuth 登录。
 7. 展开“构建 / 发布”子菜单后收起侧栏，确认没有子菜单或内部元素越界；收起状态悬停图标不应自动弹出浮层，点击后应能进入调试构建和正式构建。
 8. 检查 `/openapi.json`、`/docs`；生产确认接口文档仅管理员网段可访问。
+9. 使用普通项目成员执行 P0 首屏回归：全新 OAuth 会话进入首页，再分别直接刷新首页、工作台、构建、统计、成员和角色页面。浏览器网络请求不得包含 `project_id=demo-project` 或 `demo-version`，不得误报“你不是该项目成员”；首页与统计首屏不得重复请求。不能用系统管理员代替此项验收。
+10. 快速切换项目并制造慢响应，确认旧项目数据与权限不会覆盖新项目；服务端仍须独立拒绝非成员访问。
 
 > Swagger UI 和 ReDoc 的默认前端资源可能来自公共 CDN。完全隔离互联网的内网中，`openapi.json` 和接口调用不受影响，但文档页面样式/脚本可能需要额外做本地静态化；不要将“Swagger 页面打不开”误判为后端接口失败。
 

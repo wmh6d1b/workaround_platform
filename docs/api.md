@@ -1,6 +1,6 @@
 # WMP 接口文档
 
-- 后端版本：`1.6.0`
+- 后端版本：`1.7.0`
 - API 前缀：`/api/v1`
 - Swagger UI：`/docs`
 - ReDoc：`/redoc`

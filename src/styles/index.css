@@ -48,17 +48,8 @@ a { color: inherit; text-decoration: none; }
 .sidebar-menu .el-sub-menu .el-menu-item.is-active { color: #fff; background: rgba(73,111,251,.2); box-shadow: none; }
 .sidebar-menu.el-menu--collapse { width: 72px; padding: 20px 12px 0; }
 .sidebar-menu.el-menu--collapse .el-menu-item, .sidebar-menu.el-menu--collapse .el-sub-menu__title { padding: 0 !important; justify-content: center; }
-.sidebar-build-collapsed { display: block; width: 48px; margin: 4px 0; }
-.sidebar-build-collapsed__button { width: 48px; height: 46px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: #9ba8bf; display: flex; align-items: center; justify-content: center; }
-.sidebar-build-collapsed__button:hover { color: #fff; background: rgba(255,255,255,.055); }
-.sidebar-build-collapsed__button.is-active { color: #fff; background: #315efb; box-shadow: 0 5px 14px rgba(0,0,0,.13); }
-.sidebar-build-collapsed__button .el-icon { font-size: 18px; }
+.sidebar-menu.el-menu--collapse .el-menu-item > .el-menu-tooltip__trigger { padding: 0 !important; justify-content: center; }
 .sidebar-bottom { margin-top: auto; padding: 16px 12px; }
-.release-note { margin: 0 4px 16px; border: 1px solid rgba(255,255,255,.07); border-radius: 9px; padding: 12px; display: flex; align-items: center; gap: 10px; }
-.release-dot { width: 7px; height: 7px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 0 4px rgba(74,222,128,.09); }
-.release-note div { display: flex; flex-direction: column; gap: 3px; }
-.release-note strong { font-size: 11px; font-weight: 500; }
-.release-note small { font-size: 10px; color: #7d8ba4; }
 .collapse-button { width: 100%; height: 38px; border: 0; border-radius: 7px; color: #738198; background: transparent; display: flex; gap: 10px; align-items: center; justify-content: center; font-size: 12px; }
 .collapse-button .el-icon { width: 16px; height: 16px; flex: 0 0 16px; font-size: 16px; }
 .collapse-button .el-icon svg { width: 16px; height: 16px; display: block; }
@@ -168,11 +159,11 @@ a { color: inherit; text-decoration: none; }
 /* 全局可读性：大屏下正文以 14 px 为主，辅助文字不低于 12 px。 */
 body { font-size: 14px; }
 #app small { font-size: 12px !important; line-height: 1.55; }
-#app .brand-copy small, #app .sidebar-caption, #app .release-note small { font-size: 12px !important; }
+#app .brand-copy small, #app .sidebar-caption { font-size: 12px !important; }
 /* 最终兜底：辅助文字、标记和局部 scoped 样式均不得低于 12 px，标题与正文规则保持原层级。 */
 #app :where(*:not(svg):not(path)) { font-size: max(12px, 1em); }
 #app .sidebar-menu .el-menu-item, #app .sidebar-menu .el-sub-menu__title { font-size: 14px; }
-#app .release-note strong, #app .collapse-button, #app .context-label,
+#app .collapse-button, #app .context-label,
 #app .global-select .el-select__selected-item, #app .user-meta strong,
 #app .user-dropdown-head span { font-size: 13px; }
 #app .breadcrumb-row { font-size: 12px; }

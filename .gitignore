@@ -11,3 +11,5 @@ __pycache__/
 artifacts/
 .secrets/
 *.tsbuildinfo
+.tmp/
+working files/

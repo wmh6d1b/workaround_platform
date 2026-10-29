@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
-import { can, isInitializationProject, store } from '../store'
+import { can, ensureOptions, isInitializationProject, store } from '../store'
 import { firstSystemPath, firstSystemPermission } from '../permissions'
 import { artifacts, wkdList } from '../data/mock'
 import { api, displayNumber, errorMessage, normalizeWkd, queryString } from '../api'
@@ -41,7 +41,10 @@ async function load() {
   } catch (error) { ElMessage.error(errorMessage(error, '首页数据加载失败')) }
   finally { loading.value = false }
 }
-onMounted(load)
+onMounted(async () => {
+  try { await ensureOptions() } catch (error) { ElMessage.error(errorMessage(error, '基础选项加载失败')) }
+  await load()
+})
 watch(() => store.projectId, load)
 </script>
 

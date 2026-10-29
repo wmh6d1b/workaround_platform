@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { can, ensureOptions, isInitializationProject, logout, refreshIdentity, refreshPermissions, selectProject, store } from '../store'
@@ -34,6 +34,7 @@ function guardBusinessRoute() {
 }
 watch(isInitializationProject, guardBusinessRoute)
 
+const contextReady = ref(false)
 onMounted(async () => {
   window.addEventListener('wmp:unauthorized', unauthorized)
   try {
@@ -41,6 +42,7 @@ onMounted(async () => {
     await ensureOptions()
     guardBusinessRoute()
     await refreshPermissions()
+    contextReady.value = true
   } catch (error) { ElMessage.error(errorMessage(error, '项目上下文加载失败')) }
 })
 onBeforeUnmount(() => window.removeEventListener('wmp:unauthorized', unauthorized))
@@ -55,14 +57,11 @@ onBeforeUnmount(() => window.removeEventListener('wmp:unauthorized', unauthorize
         <el-menu-item v-if="can('home.view')" index="/"><el-icon><HomeFilled /></el-icon><template #title>首页</template></el-menu-item>
         <el-menu-item v-if="can('wkd.view') && !isInitializationProject" index="/workbench"><el-icon><Grid /></el-icon><template #title>工作台</template></el-menu-item>
         <el-sub-menu v-if="!store.sidebarCollapsed && !isInitializationProject && (can('build.debug.view') || can('build.release.view'))" index="/build"><template #title><el-icon><Box /></el-icon><span>构建 / 发布</span></template><el-menu-item v-if="can('build.debug.view')" index="/build/debug">调试构建</el-menu-item><el-menu-item v-if="can('build.release.view')" index="/build/release">正式构建</el-menu-item></el-sub-menu>
-        <el-dropdown v-else-if="!isInitializationProject && (can('build.debug.view') || can('build.release.view'))" trigger="click" placement="right-start" class="sidebar-build-collapsed" @command="router.push">
-          <button type="button" class="sidebar-build-collapsed__button" :class="{ 'is-active': route.path.startsWith('/build') }" title="构建 / 发布" aria-label="构建 / 发布"><el-icon><Box /></el-icon></button>
-          <template #dropdown><el-dropdown-menu><el-dropdown-item v-if="can('build.debug.view')" command="/build/debug">调试构建</el-dropdown-item><el-dropdown-item v-if="can('build.release.view')" command="/build/release">正式构建</el-dropdown-item></el-dropdown-menu></template>
-        </el-dropdown>
+        <el-menu-item v-else-if="!isInitializationProject && (can('build.debug.view') || can('build.release.view'))" :index="can('build.debug.view') ? '/build/debug' : '/build/release'"><el-icon><Box /></el-icon><template #title>构建 / 发布</template></el-menu-item>
         <el-menu-item index="/statistics"><el-icon><DataAnalysis /></el-icon><template #title>数据统计</template></el-menu-item>
         <el-menu-item v-if="hasSystemAccess" :index="firstSystemPath()"><el-icon><Setting /></el-icon><template #title>系统管理</template></el-menu-item>
       </el-menu>
-      <div class="sidebar-bottom"><div v-show="!store.sidebarCollapsed" class="release-note"><span class="release-dot" /><div><strong>{{ store.demoMode ? 'Demo 数据模式' : 'API 已连接' }}</strong></div></div><button class="collapse-button" @click="store.sidebarCollapsed = !store.sidebarCollapsed" :title="store.sidebarCollapsed ? '展开导航' : '收起导航'"><el-icon><Expand v-if="store.sidebarCollapsed" /><Fold v-else /></el-icon><span v-show="!store.sidebarCollapsed">收起导航</span></button></div>
+      <div class="sidebar-bottom"><button class="collapse-button" @click="store.sidebarCollapsed = !store.sidebarCollapsed" :title="store.sidebarCollapsed ? '展开导航' : '收起导航'"><el-icon><Expand v-if="store.sidebarCollapsed" /><Fold v-else /></el-icon><span v-show="!store.sidebarCollapsed">收起导航</span></button></div>
     </aside>
 
     <div class="app-body">
@@ -73,7 +72,7 @@ onBeforeUnmount(() => window.removeEventListener('wmp:unauthorized', unauthorize
           <el-dropdown trigger="click" @command="signOut"><button class="user-trigger"><el-avatar :size="34" class="user-avatar">{{ store.session?.username.slice(0, 1) }}</el-avatar><span class="user-meta"><strong>{{ store.session?.username }}</strong><small>{{ store.session?.role }}</small></span><el-icon class="user-chevron"><ArrowDown /></el-icon></button><template #dropdown><el-dropdown-menu><div class="user-dropdown-head"><strong>{{ store.session?.username }}</strong><span>工号 {{ store.session?.employeeId }}</span></div><el-dropdown-item divided command="logout"><el-icon><SwitchButton /></el-icon>退出登录</el-dropdown-item></el-dropdown-menu></template></el-dropdown>
         </div>
       </header>
-      <main class="main-content"><div class="breadcrumb-row"><span>WMP</span><template v-for="item in breadcrumb" :key="item"><el-icon><ArrowRight /></el-icon><strong>{{ item }}</strong></template></div><router-view v-slot="{ Component }"><transition name="page" mode="out-in"><component :is="Component" /></transition></router-view></main>
+      <main class="main-content"><div class="breadcrumb-row"><span>WMP</span><template v-for="item in breadcrumb" :key="item"><el-icon><ArrowRight /></el-icon><strong>{{ item }}</strong></template></div><div v-if="!contextReady" v-loading="true" style="min-height:240px" /><router-view v-else v-slot="{ Component }"><transition name="page" mode="out-in"><component :is="Component" /></transition></router-view></main>
     </div>
   </div>
 </template>
