@@ -43,6 +43,16 @@ npm run docs:api
 
 后端默认监听 `8000`，Swagger 为 `/docs`，OpenAPI 为 `/openapi.json`，健康检查为 `/health`。`Settings` 从后端工作目录的 `.env` 读取配置，不要通过修改 `config.py` 默认值写入真实密钥。
 
+本工程自带一套仅用于本地开发的数据库与对象存储（PostgreSQL 17 与 RustFS，位于 `.cache/services/`，数据在 `.cache/services/data/`），可用统一脚本一键管理全部四个本地服务：
+
+```bash
+./scripts/dev-services.sh start    # PostgreSQL + RustFS + 后端(8000) + 前端(7100)
+./scripts/dev-services.sh status   # 查看状态
+./scripts/dev-services.sh stop     # 停止全部
+```
+
+脚本带就绪探测（`pg_isready`、RustFS 桶/CORS 自检、`/health`、前端页面），日志在 `.cache/services/logs/`。该目录与脚本仅服务于本地开发，不属于测试/生产部署路径。
+
 ## 3. 请求与鉴权约定
 
 除认证和健康检查外，接口通过 `current_user` 获取启用用户。项目按钮使用：

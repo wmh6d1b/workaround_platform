@@ -79,7 +79,7 @@ async function oauthLogin() {
 
 <style scoped>
 .login-page { min-height: 100vh; display: grid; grid-template-columns: minmax(500px, 1.04fr) minmax(560px, .96fr); background: #fff; }
-.login-brand-panel { background: #111b31; color: #fff; position: relative; overflow: hidden; padding: 56px; display: flex; align-items: center; }
+.login-brand-panel { background: #111b31; color: #fff; position: relative; overflow: hidden; padding: 56px; display: flex; align-items: center; justify-content: center; }
 .login-brand { display: flex; align-items: center; gap: 22px; position: relative; z-index: 1; }
 #app .login-brand .brand-mark { width: 54px; height: 54px; flex: none; border-radius: 14px; font-size: 25px; }
 #app .login-brand-copy h1 { margin: 0; color: #fff; font-size: clamp(28px, 2.6vw, 38px); font-weight: 600; line-height: 1.4; letter-spacing: 1px; }
