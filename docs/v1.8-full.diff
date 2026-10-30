@@ -1,0 +1,811 @@
+diff --git a/backend/app/attachment_service.py b/backend/app/attachment_service.py
+index f5993d9..aaa298b 100644
+--- a/backend/app/attachment_service.py
++++ b/backend/app/attachment_service.py
+@@ -86,7 +86,7 @@ def owned_session(db: Session, user: User, session_id: str, permission: str = 'f
+     authorize(db, user, permission, session.project_id)
+     if session.wkd_id:
+         # Lock the WKD so status transitions and completion of an upload cannot cross.
+-        wkd = db.get(Wkd, session.wkd_id, with_for_update=True)
++        wkd = db.scalar(select(Wkd).where(Wkd.id == session.wkd_id).with_for_update(of=Wkd))
+         if not wkd:
+             raise HTTPException(404, 'WKD 不存在')
+         authorize_wkd_upload(db, user, wkd)
+diff --git a/backend/app/main.py b/backend/app/main.py
+index a9430c9..0a5f9e6 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
+         with suppress(asyncio.CancelledError):
+             await cleanup_task
+ 
+-app = FastAPI(title=settings.app_name, version='1.7.0', lifespan=lifespan,
++app = FastAPI(title=settings.app_name, version='1.8.0', lifespan=lifespan,
+     description='WKD 全生命周期、原子操作编排、项目级 RBAC、构建制品和 RustFS 文件接口。除认证与健康检查外，所有接口均需 Bearer Token，并在服务端执行按钮权限校验。',
+     docs_url='/docs', redoc_url='/redoc', openapi_url='/openapi.json')
+ app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=True,
+@@ -91,4 +91,4 @@ app.include_router(admin.router, prefix='/api/v1')
+ 
+ @app.get('/health', tags=['系统'], summary='服务健康检查')
+ def health():
+-    return {'status': 'ok', 'service': 'wmp-api', 'version': '1.7.0'}
++    return {'status': 'ok', 'service': 'wmp-api', 'version': '1.8.0'}
+diff --git a/backend/app/routers/admin.py b/backend/app/routers/admin.py
+index 6536cb8..86472f8 100644
+--- a/backend/app/routers/admin.py
++++ b/backend/app/routers/admin.py
+@@ -15,6 +15,23 @@ business_permissions = {
+     'machines': 'business.machine',
+     'subsystems': 'business.subsystem',
+ }
++RESOURCE_STATUSES = {
++    'projects': ('ENABLED', 'DISABLED'),
++    'versions': ('DEVELOPING', 'RELEASED', 'ARCHIVED'),
++    'machines': ('RUNNING', 'MAINTENANCE', 'STOPPED'),
++    'subsystems': ('ENABLED', 'DISABLED'),
++}
++
++
++def validate_resource_status(resource: str, status: str | None) -> str:
++    allowed = RESOURCE_STATUSES.get(resource)
++    if not allowed:
++        return status or 'ENABLED'
++    if status is None:
++        return allowed[0]
++    if status not in allowed:
++        raise HTTPException(422, f'该资源状态仅支持：{"、".join(allowed)}')
++    return status
+ 
+ 
+ def entity_out(item) -> dict:
+@@ -129,6 +146,7 @@ def create_business(resource: str, payload: EntityInput, db: Session = Depends(g
+             raise HTTPException(422, '必须指定所属项目')
+         authorize(db, user, f'{business_permissions[resource]}.edit', payload.project_id)
+         ensure_operational_project(db, payload.project_id)
++    validate_resource_status(resource, payload.status)
+     values = payload.model_dump(exclude_none=True)
+     if resource == 'versions':
+         values['number'] = payload.number or payload.name
+@@ -158,6 +176,7 @@ def update_business(resource: str, item_id: str, payload: EntityInput, db: Sessi
+         ensure_operational_project(db, item.project_id)
+         if payload.project_id and payload.project_id != item.project_id:
+             raise HTTPException(403, '不允许将业务数据转移到其他项目')
++    validate_resource_status(resource, payload.status)
+     excluded = {'name'} if resource == 'versions' else set()
+     if resource != 'projects':
+         excluded = {*excluded, 'project_id'}
+diff --git a/backend/app/routers/wkd.py b/backend/app/routers/wkd.py
+index 97e8496..fba40fe 100644
+--- a/backend/app/routers/wkd.py
++++ b/backend/app/routers/wkd.py
+@@ -119,7 +119,7 @@ def get_wkd(wkd_id: str, db: Session = Depends(get_db), user: User = Depends(cur
+ 
+ @router.post('/{wkd_id}/transitions/{action}', summary='状态流转；所有操作必须携带 lock_version，提交类携带完整数据，指派类携带 manager_id')
+ def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
+-    wkd = db.get(Wkd, wkd_id, with_for_update=True)
++    wkd = db.scalar(select(Wkd).where(Wkd.id == wkd_id).with_for_update(of=Wkd))
+     if not wkd: raise HTTPException(404, 'WKD 不存在')
+     from ..lifecycle import RULES, transition_rule
+     if action not in RULES: raise HTTPException(404, '未知流转操作')
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index 31affb8..e96c59d 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -260,7 +260,7 @@ class EntityInput(BaseModel):
+     code: str | None = Field(default=None, max_length=80, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+     project_id: str | None = None
+     owner_id: str | None = None
+-    status: Literal['ENABLED', 'DISABLED', 'STOPPED', 'DEVELOPING', 'RELEASED', 'ARCHIVED', 'INITIALIZING'] = 'ENABLED'
++    status: Literal['ENABLED', 'DISABLED', 'RUNNING', 'MAINTENANCE', 'STOPPED', 'DEVELOPING', 'RELEASED', 'ARCHIVED'] | None = None
+     number: str | None = Field(default=None, max_length=60)
+     model: str | None = Field(default=None, max_length=100)
+     location: str | None = Field(default=None, max_length=120)
+diff --git a/backend/tests/test_initialization_project.py b/backend/tests/test_initialization_project.py
+index 65fa6eb..2ce660c 100644
+--- a/backend/tests/test_initialization_project.py
++++ b/backend/tests/test_initialization_project.py
+@@ -39,7 +39,8 @@ class InitializationProjectTests(unittest.TestCase):
+ 
+     def test_wkd_transition_is_blocked_even_for_superuser(self):
+         wkd = SimpleNamespace(id='wkd-1', project_id='init-project', status=WkdStatus.NEW_WKD)
+-        self.db.get.side_effect = [wkd, self.project]
++        self.db.get.return_value = self.project
++        self.db.scalar.side_effect = [wkd, self.project]
+         self.assert_blocked(lambda: transition('wkd-1', 'disable', SimpleNamespace(), self.db, self.admin))
+         self.assertEqual(wkd.status, WkdStatus.NEW_WKD)
+ 
+diff --git a/backend/tests/test_v16_regressions.py b/backend/tests/test_v16_regressions.py
+index 7fb6570..d5b27df 100644
+--- a/backend/tests/test_v16_regressions.py
++++ b/backend/tests/test_v16_regressions.py
+@@ -10,11 +10,11 @@ from pydantic import ValidationError
+ from app.attachment_service import authorize_wkd_upload, owned_session
+ from app.config import Settings, validate_production_settings
+ from app.deps import accessible_project_ids, user_permissions
+-from app.models import ExecutionType, WkdStatus
++from app.models import ExecutionType, Machine, WkdStatus
+ from app.routers.auth import login
+ from app.routers.statistics import statistics, xlsx_safe
+ from app.routers.wkd import transition
+-from app.schemas import BuildInput, LoginInput, TransitionInput, WkdInput
++from app.schemas import BuildInput, EntityInput, LoginInput, TransitionInput, WkdInput
+ from app.seed import PERMISSIONS, seed
+ from app.services import artifact_out, wkd_list_out
+ 
+@@ -83,12 +83,13 @@ class AttachmentStateBoundaryTests(unittest.TestCase):
+         session = SimpleNamespace(id='session-1', owner_id='user-1', project_id='project-1', wkd_id='wkd-1',
+                                   status='OPEN', expires_at=datetime.utcnow() + timedelta(hours=1))
+         self.wkd.status = WkdStatus.REVIEW
+-        self.db.get.side_effect = [session, self.wkd]
++        self.db.get.return_value = session
++        self.db.scalar.return_value = self.wkd
+         with self.assertRaises(HTTPException) as raised:
+             owned_session(self.db, self.user, session.id)
+         self.assertEqual(raised.exception.status_code, 409)
+-        self.assertEqual(self.db.get.call_count, 2)
+-        self.assertEqual(self.db.get.call_args_list[1].kwargs, {'with_for_update': True})
++        self.db.get.assert_called_once_with(unittest.mock.ANY, session.id)
++        self.db.scalar.assert_called_once()
+ 
+ 
+ class ConcurrencyAndConfigurationTests(unittest.TestCase):
+@@ -101,10 +102,10 @@ class ConcurrencyAndConfigurationTests(unittest.TestCase):
+     def test_transition_loads_wkd_with_row_lock(self):
+         wkd = SimpleNamespace(status=WkdStatus.NEW_WKD)
+         db = Mock()
+-        db.get.return_value = wkd
++        db.scalar.return_value = wkd
+         with self.assertRaises(HTTPException):
+             transition('wkd-1', 'not-an-action', TransitionInput(lock_version=1), db, SimpleNamespace())
+-        db.get.assert_called_once_with(unittest.mock.ANY, 'wkd-1', with_for_update=True)
++        db.scalar.assert_called_once()
+ 
+     def test_production_rejects_default_credentials(self):
+         with self.assertRaisesRegex(RuntimeError, '生产环境配置校验失败'):
+@@ -181,6 +182,44 @@ class LightweightReadModelTests(unittest.TestCase):
+         self.assertIsNone(scoped.call_args_list[1].kwargs['end_date'])
+ 
+ 
++class ResourceStatusValidationTests(unittest.TestCase):
++    @patch('app.routers.admin.commit')
++    @patch('app.routers.admin.audit')
++    @patch('app.routers.admin.authorize')
++    def test_machine_accepts_running_and_maintenance(self, _authorize, _audit, _commit):
++        from app.routers.admin import create_business
++        db = Mock()
++        for status in ('RUNNING', 'MAINTENANCE', 'STOPPED'):
++            result = create_business('machines', EntityInput(name='机台一', project_id='project-1', status=status), db, SimpleNamespace())
++            self.assertEqual(result['status'], status)
++
++    @patch('app.routers.admin.authorize')
++    def test_machine_rejects_status_of_other_resources(self, _authorize):
++        from app.routers.admin import create_business, update_business
++        db = Mock()
++        for status in ('ENABLED', 'DEVELOPING', 'RELEASED'):
++            with self.subTest(status=status), self.assertRaises(HTTPException) as raised:
++                create_business('machines', EntityInput(name='机台一', project_id='project-1', status=status), db, SimpleNamespace())
++            self.assertEqual(raised.exception.status_code, 422)
++        item = Machine(project_id='project-1', name='机台一')
++        db.get.side_effect = [item, SimpleNamespace(code='P1', status='ENABLED')]
++        with self.assertRaises(HTTPException) as raised:
++            update_business('machines', item.id, EntityInput(name='机台一', project_id='project-1', status='DEVELOPING'), db, SimpleNamespace())
++        self.assertEqual(raised.exception.status_code, 422)
++        self.assertNotEqual(item.status, 'DEVELOPING')
++
++    @patch('app.routers.admin.authorize')
++    def test_version_and_project_status_sets_are_separate(self, _authorize):
++        from app.routers.admin import create_business
++        db = Mock()
++        with self.assertRaises(HTTPException) as raised:
++            create_business('versions', EntityInput(name='V1.0.0', project_id='project-1', status='RUNNING'), db, SimpleNamespace())
++        self.assertEqual(raised.exception.status_code, 422)
++        with self.assertRaises(HTTPException) as raised:
++            create_business('projects', EntityInput(name='项目一', code='P1', status='RUNNING'), db, SimpleNamespace(id='admin', is_superuser=True))
++        self.assertEqual(raised.exception.status_code, 422)
++
++
+ class AccountSafetyTests(unittest.TestCase):
+     def tearDown(self):
+         from app.config import get_settings
+diff --git a/docs/api.md b/docs/api.md
+index 19a84a1..e98a6c2 100644
+--- a/docs/api.md
++++ b/docs/api.md
+@@ -1,6 +1,6 @@
+ # WMP 接口文档
+ 
+-- 后端版本：`1.7.0`
++- 后端版本：`1.8.0`
+ - API 前缀：`/api/v1`
+ - Swagger UI：`/docs`
+ - ReDoc：`/redoc`
+diff --git a/docs/deployment.md b/docs/deployment.md
+index 6511584..4308f90 100644
+--- a/docs/deployment.md
++++ b/docs/deployment.md
+@@ -1,8 +1,8 @@
+-# WMP v1.7 部署文档
++# WMP v1.8 部署文档
+ 
+ 本文用于将当前工程部署到已具备 PostgreSQL 和 RustFS 的内网 Linux 服务器，分别说明**测试版本**与**生产版本**。示例系统为 Ubuntu/Debian，其他 Linux 发行版请替换对应的软件包安装命令和 systemd、Nginx 配置路径。
+ 
+-> 适用代码版本：WMP v1.7.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
++> 适用代码版本：WMP v1.8.0。部署前应固定代码版本或提交号，不要直接用随时变化的工作目录作为生产发布包。
+ 
+ ## 1. 架构与部署边界
+ 
+@@ -49,7 +49,7 @@ FastAPI / Uvicorn
+ 1. **OIDC 负责身份认证，WMP 负责业务授权。** 已导入用户首次登录只按工号绑定 OIDC `sub`，后续按 `sub` 识别；用户名可以重复，不能作为账号绑定依据，IdP 必须返回工号。未注册的企业用户会自动创建 WMP 账号，并加入按需创建的“用户初始化”占位项目。该项目的“初始化用户”角色仅有首页权限，真实项目角色和按钮权限仍由 WMP 项目管理员分配。系统管理员不能通过 OAuth 登录，必须使用本地管理员账号。
+ 2. **IdP 必须支持标准 OIDC 授权码流程。** 需要提供发现文档、授权/令牌接口、JWKS，并支持 ID Token 的 Issuer、Audience、Nonce 和签名校验。当前令牌认证支持 `client_secret_basic`、`client_secret_post`，默认签名算法为 `RS256`。
+ 3. **演示业务数据默认关闭。** 权限、预设角色和系统管理员仍会初始化；只有 `SEED_DEMO_DATA=true` 且数据库没有任何项目时，才创建演示项目、版本、机台、子系统和一个已审核通过的 WKD。生产必须保持 `false`。
+-4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。从 v1.5 升级到 v1.7 没有数据库结构变化；如果从更早版本升级，应先核对 v1.5 的用户部门、用户名唯一约束和旧 `users.name` 列变更。生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
++4. **数据库尚未引入 Alembic。** 后端启动时执行 `create_all` 和部分 `ALTER` 语句，数据库账号需要建表、修改表和修改枚举的权限。从 v1.5 升级到 v1.8 没有数据库结构变化；如果从更早版本升级，应先核对 v1.5 的用户部门、用户名唯一约束和旧 `users.name` 列变更。生产升级与回滚必须先在测试环境验证并备份，不能假设任意旧代码都能直接回滚到已升级的数据结构。
+ 5. **管理员密码环境变量主要用于首次初始化。** 管理员已经存在后，仅修改 `BOOTSTRAP_ADMIN_PASSWORD` 不会自动重置其密码。首次启动前就应设置高强度密码。当前版本没有自助修改密码页面或密码重置 API；已有管理员密码需由运维在后端通过受控脚本更新 PostgreSQL 中的 `users.password_hash`，具体方法见 10.5 节。
+ 6. **项目成员支持 Excel／CSV 批量初始化。** 系统管理员可导入任意项目，项目管理员只能导入具有 `project.member.manage` 权限的项目。页面下载的五列模板为工号、用户名、所属部门、项目角色、邮箱；工号和用户名必填，其他字段选填，角色为空时使用页面默认角色。单次最多 5000 行，必须先校验预览，全部无错误后才能确认；已有成员保留原角色。
+ 7. **生产配置采用 fail-closed。** 启动时会拒绝默认或过短的 JWT 密钥、管理员初始密码，以及默认数据库和 RustFS 凭证；配置不合法时进程直接退出，应先查看日志并修正 `.env`，不能通过关闭校验绕过。
+@@ -99,17 +99,17 @@ tar \
+   --exclude='./artifacts' \
+   --exclude='./backend/.env' \
+   --exclude='*.log' \
+-  -czf /tmp/wmp-v1.7.0.tar.gz .
++  -czf /tmp/wmp-v1.8.0.tar.gz .
+ ```
+ 
+ 计算校验值并传到目标服务器：
+ 
+ ```bash
+-shasum -a 256 /tmp/wmp-v1.7.0.tar.gz
+-scp /tmp/wmp-v1.7.0.tar.gz <用户>@<服务器>:/tmp/
++shasum -a 256 /tmp/wmp-v1.8.0.tar.gz
++scp /tmp/wmp-v1.8.0.tar.gz <用户>@<服务器>:/tmp/
+ ```
+ 
+-服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.7.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
++服务器解压后应核对 SHA-256；Linux 使用 `sha256sum /tmp/wmp-v1.8.0.tar.gz`。发布包中的 `docs/openapi.json` 是接口快照，运行时 Swagger/OpenAPI 由 FastAPI 后端提供。
+ 
+ ## 6. 初始化 PostgreSQL 与 RustFS
+ 
+@@ -157,7 +157,7 @@ CREATE DATABASE wmp_prod OWNER wmp_prod;
+ ```bash
+ sudo useradd --system --home /opt/wmp-test --shell /usr/sbin/nologin wmptest
+ sudo mkdir -p /opt/wmp-test/app
+-sudo tar -xzf /tmp/wmp-v1.7.0.tar.gz -C /opt/wmp-test/app
++sudo tar -xzf /tmp/wmp-v1.8.0.tar.gz -C /opt/wmp-test/app
+ sudo chown -R wmptest:wmptest /opt/wmp-test
+ 
+ sudo apt-get update
+@@ -323,7 +323,7 @@ curl --fail http://127.0.0.1:8080/openapi.json -o /tmp/wmp-test-openapi.json
+ ```bash
+ sudo useradd --system --home /opt/wmp --shell /usr/sbin/nologin wmp
+ sudo mkdir -p /opt/wmp/app
+-sudo tar -xzf /tmp/wmp-v1.7.0.tar.gz -C /opt/wmp/app
++sudo tar -xzf /tmp/wmp-v1.8.0.tar.gz -C /opt/wmp/app
+ sudo chown -R wmp:wmp /opt/wmp
+ cd /opt/wmp/app
+ python3 -m venv .venv
+diff --git a/docs/design.md b/docs/design.md
+index 99f9d42..da94f3f 100644
+--- a/docs/design.md
++++ b/docs/design.md
+@@ -1,7 +1,7 @@
+-# WMP v1.7 设计文档
++# WMP v1.8 设计文档
+ 
+ - 文档日期：2026-10-29
+-- 适用版本：v1.7.0
++- 适用版本：v1.8.0
+ - 文档边界：描述当前已实现能力；残余限制单列，不作为已交付能力宣传。
+ 
+ ## 1. 设计目标
+diff --git a/docs/development-backend.md b/docs/development-backend.md
+index 1e6d59a..5013ceb 100644
+--- a/docs/development-backend.md
++++ b/docs/development-backend.md
+@@ -1,4 +1,4 @@
+-# WMP v1.7 后端开发文档
++# WMP v1.8 后端开发文档
+ 
+ ## 1. 技术栈与结构
+ 
+@@ -43,6 +43,16 @@ npm run docs:api
+ 
+ 后端默认监听 `8000`，Swagger 为 `/docs`，OpenAPI 为 `/openapi.json`，健康检查为 `/health`。`Settings` 从后端工作目录的 `.env` 读取配置，不要通过修改 `config.py` 默认值写入真实密钥。
+ 
++本工程自带一套仅用于本地开发的数据库与对象存储（PostgreSQL 17 与 RustFS，位于 `.cache/services/`，数据在 `.cache/services/data/`），可用统一脚本一键管理全部四个本地服务：
++
++```bash
++./scripts/dev-services.sh start    # PostgreSQL + RustFS + 后端(8000) + 前端(7100)
++./scripts/dev-services.sh status   # 查看状态
++./scripts/dev-services.sh stop     # 停止全部
++```
++
++脚本带就绪探测（`pg_isready`、RustFS 桶/CORS 自检、`/health`、前端页面），日志在 `.cache/services/logs/`。该目录与脚本仅服务于本地开发，不属于测试/生产部署路径。
++
+ ## 3. 请求与鉴权约定
+ 
+ 除认证和健康检查外，接口通过 `current_user` 获取启用用户。项目按钮使用：
+diff --git a/docs/development-frontend.md b/docs/development-frontend.md
+index fc96932..9749220 100644
+--- a/docs/development-frontend.md
++++ b/docs/development-frontend.md
+@@ -1,4 +1,4 @@
+-# WMP v1.7 前端开发文档
++# WMP v1.8 前端开发文档
+ 
+ ## 1. 技术栈与目录
+ 
+diff --git a/docs/openapi.json b/docs/openapi.json
+index c3edee6..1a64ed1 100644
+--- a/docs/openapi.json
++++ b/docs/openapi.json
+@@ -3,7 +3,7 @@
+   "info": {
+     "title": "WMP 规避措施管理平台",
+     "description": "WKD 全生命周期、原子操作编排、项目级 RBAC、构建制品和 RustFS 文件接口。除认证与健康检查外，所有接口均需 Bearer Token，并在服务端执行按钮权限校验。",
+-    "version": "1.7.0"
++    "version": "1.8.0"
+   },
+   "paths": {
+     "/api/v1/auth/login": {
+@@ -3891,18 +3891,25 @@
+             "title": "Owner Id"
+           },
+           "status": {
+-            "type": "string",
+-            "enum": [
+-              "ENABLED",
+-              "DISABLED",
+-              "STOPPED",
+-              "DEVELOPING",
+-              "RELEASED",
+-              "ARCHIVED",
+-              "INITIALIZING"
++            "anyOf": [
++              {
++                "type": "string",
++                "enum": [
++                  "ENABLED",
++                  "DISABLED",
++                  "RUNNING",
++                  "MAINTENANCE",
++                  "STOPPED",
++                  "DEVELOPING",
++                  "RELEASED",
++                  "ARCHIVED"
++                ]
++              },
++              {
++                "type": "null"
++              }
+             ],
+-            "title": "Status",
+-            "default": "ENABLED"
++            "title": "Status"
+           },
+           "number": {
+             "anyOf": [
+diff --git a/docs/testing.md b/docs/testing.md
+index ebfaaa3..c6c0b49 100644
+--- a/docs/testing.md
++++ b/docs/testing.md
+@@ -1,4 +1,4 @@
+-# WMP v1.7 测试文档
++# WMP v1.8 测试文档
+ 
+ - 最近全量执行：2026-10-29
+ - 当前结果：后端 127 项通过，前端 2 项通过，生产构建通过，OpenAPI 56 个端点快照已刷新。
+diff --git a/docs/v1.8-change-guide.md b/docs/v1.8-change-guide.md
+new file mode 100644
+index 0000000..e0cfdb8
+--- /dev/null
++++ b/docs/v1.8-change-guide.md
+@@ -0,0 +1,93 @@
++# WMP v1.8 差异、部署与代码理解指南
++
++本文面向内网 AI、研发和运维人员，说明当前 **v1.8.0** 相比 GitHub **v1.7.0** 的累计变化。行为结论来自当前代码与测试，精确逐行差异见 `docs/v1.8-full.diff`。
++
++## 1. 对比基线与阅读方式
++
++- 基线提交：`5a0841dfb54e7ed38a52fdc745888093ea5d902a`（`release: WMP v1.7.0 文档与首屏稳定性完善`）。
++- 中间小提交：`3d65c04`（登录页品牌区居中、新增本地开发服务一键脚本 `scripts/dev-services.sh`）。
++- 当前版本：v1.8.0，重点修复内网部署暴露的两个严重后端缺陷（机台状态枚举、并发行锁），并补齐新建 WKD 草稿、幂等重试与一批交互细节。
++- 接口以 `docs/api.md`、`docs/openapi.json` 为准；部署以 `docs/deployment.md` 为准，不要根据页面或历史文档推测。
++
++## 2. 一句话理解 v1.8
++
++v1.8 不新增业务模型和接口，主要做两件事：**修掉内网部署发现的两个 P0 后端缺陷**（机台状态枚举缺失导致无法新建机台、`FOR UPDATE` 与 ORM join 冲突导致状态流转报错），以及**把新建 WKD 的"草稿、幂等、拖拽"三个交互做完整**。
++
++## 3. v1.7 → v1.8 用户可见行为差异
++
++| 场景 | v1.7 | 当前 v1.8 |
++|---|---|---|
++| 系统管理-机台管理新建/编辑机台 | 提交 `RUNNING`/`MAINTENANCE` 被后端 422 拒绝（枚举缺失，默认状态即失败） | 按资源类型校验：机台 `RUNNING/MAINTENANCE/STOPPED`、版本 `DEVELOPING/RELEASED/ARCHIVED`、项目/子系统 `ENABLED/DISABLED`，非法值返回 422 并列出合法值 |
++| 给机台填版本类状态（如 `DEVELOPING`） | 共用枚举不拦截 | 422 拒绝，提示该机台支持的枚举 |
++| WKD 状态流转 / 附件完成上传 | 内网 PostgreSQL 报 `FOR UPDATE cannot be applied to the nullable side of an outer join`，操作失败 | `FOR UPDATE OF wkds` 只锁主表，功能正常 |
++| 新建 WKD 填了一半离开 | 无草稿能力，只能"保存并创建" | 新增「保存草稿」按钮（仅写浏览器 localStorage）；再次进入新建页自动恢复；检测到其他页面保存的草稿时弹覆盖确认 |
++| 创建 WKD 失败后修改内容重试 | 报 409"同一幂等键不能用于不同的创建请求" | 幂等键改为创建内容哈希：内容不变重试自动命中原键（防双击重复创建），内容修改自动换新键 |
++| 首页右上角 | 「登记 WKD」按钮 | 移除，统一从工作台「新建WKD」进入 |
++| 原子操作编排 | 整张卡片可拖拽，选中输入框文本易误触发拖拽 | 仅左上角拖拽手柄可拖拽；标题栏显示"已添加 X 个操作"计数；拖拽中卡片半透明虚线反馈 |
++| WKD 详情属性面板 | 基本信息 → 业务归属 → 执行属性；备注输入框；关联机台只能下拉选择 | 执行属性上移到基本信息之后；删除备注框（由详细流程富文本承载）；关联机台支持输入过滤、多选标签折叠 |
++| 登录页左侧品牌区 | 水平方向偏左 | 在左半面板水平垂直居中 |
++| 本地开发环境启动 | 手工分别启动 PostgreSQL/RustFS/前后端 | `./scripts/dev-services.sh start/status/stop` 一键管理四个本地服务（含就绪探测与日志） |
++
++## 4. v1.8 关键实现说明
++
++### 4.1 业务资源状态枚举按资源校验（后端）
++
++- `backend/app/schemas.py`：`EntityInput.status` 扩为全量合法枚举并改为可选（`None` 时由各模型默认值兜底，各模型默认值恰好是各自合法值首位）。
++- `backend/app/routers/admin.py` 新增 `RESOURCE_STATUSES` 与 `validate_resource_status()`，在 `create_business` / `update_business` 中按 `projects/versions/machines/subsystems` 分别校验，422 提示合法集合。
++- 回归测试：`backend/tests/test_v16_regressions.py` 的 `ResourceStatusValidationTests`（机台接受三类合法值、拒绝其他资源状态、版本/项目状态集互相隔离）。
++- 注意：`seed.py` 的初始化项目仍直接写 `INITIALIZING`，不走 `EntityInput`，行为不变。
++
++### 4.2 并发行锁修复（后端）
++
++- 根因：`Wkd` 有 7 个 `lazy='joined'` 关系（项目、三个版本、子系统、责任人、处理人），`db.get(Wkd, ..., with_for_update=True)` 生成的 SQL 带 LEFT OUTER JOIN，PostgreSQL 禁止对 outer join 的 nullable 侧加 `FOR UPDATE`。
++- 修法：两处加锁改为显式查询 `db.scalar(select(Wkd).where(Wkd.id == ...).with_for_update(of=Wkd))`，生成 `FOR UPDATE OF wkds`，只锁主表行，锁语义与原设计一致。位置：`backend/app/routers/wkd.py`（状态流转）、`backend/app/attachment_service.py`（上传会话复核）。
++- **不要**采用 `db.get(..., with_for_update(of=Wkd))` 的写法——`Session.get()` 不支持 `of` 参数，会抛 `TypeError`。
++- 相关断言行锁的测试（`test_v16_regressions.py`、`test_initialization_project.py`）已同步改为 mock `db.scalar`。
++- `backend/app/routers/admin.py` 锁 `Project` 的 `db.get(..., with_for_update=True)` 不受影响（`Project` 无 joined 关系，单表查询）。
++
++### 4.3 新建 WKD 本地草稿（前端）
++
++- `src/views/WkdDetailView.vue`：
++  - 新增 `saveDraftOnly()`，新建态「保存草稿」按钮仅写 localStorage（复用 `src/utils/wkdDrafts.ts`，单槽位、4 MB 上限不变），不调后端。
++  - 冲突保护：用 `lastDraftSavedAt` 记录本标签页最后写入/恢复的草稿时间，保存时发现已有草稿且时间戳不一致（来自其他页面）先弹 `ElMessageBox` 确认再覆盖。
++  - `restoreLocalDraft()` 恢复时记录来源时间，提示语带保存时间。
++- 边界：草稿仅存当前浏览器；附件不随草稿恢复（附件绑上传会话，24 小时过期）；原子操作内嵌文件随表单序列化保存，不受影响。
++
++### 4.4 创建幂等键改为内容哈希（前端）
++
++- 原实现：按"用户+项目"在 sessionStorage 存一个 UUID，创建失败不清除，修改内容重试触发后端 409。
++- 新实现：`creationIdempotencyKey(payload)` 对请求体（业务字段+说明+附件 ID 列表）做 cyrb53 风格哈希，键为 `create-{user}-{project}-{hash}`。相同内容重试命中同一键（后端回放返回首次创建的 WKD），内容变化自然落到新键。
++- 创建成功后仍调用 `clearCreatedSessionReferences()` 清理上传会话引用；幂等键不再需要 sessionStorage 存储。
++
++### 4.5 原子操作编排交互（前端）
++
++- 卡片去掉 `draggable`，仅头部 `⠿` 手柄 `draggable="true"` 触发拖拽；卡片保留 `dragover/drop` 接收放置，`dropOperation()` 逻辑不变。
++- 拖拽中卡片 `opacity:.55` + 虚线边框反馈。
++- 编排区标题栏新增 `operation-count` 徽章"已添加 X 个操作"，人工执行类型下隐藏。
++
++### 4.6 属性面板与杂项（前端）
++
++- 属性面板分组顺序调整为：基本信息 → 执行属性 → 业务归属；移除备注输入框（后端 `remark` 字段保留兼容，不传即为 `null`）。
++- 关联机台 `el-select` 增加 `filterable` + `collapse-tags`。
++- `HomeView.vue` 移除「登记 WKD」按钮，新建唯一入口为工作台。
++- `LoginView.vue` 左侧品牌面板增加 `justify-content: center`。
++- 新增 `scripts/dev-services.sh`：一键管理工程内自带的 PostgreSQL 17 / RustFS / 后端(8000) / 前端(7100)，含就绪探测，日志在 `.cache/services/logs/`。该目录不进 Git。
++
++## 5. 部署与升级注意事项
++
++- 数据库结构无变化，v1.7 → v1.8 直接替换代码重启即可；回滚无数据结构障碍。
++- 后端启动即生效的变更：状态枚举校验、行锁修复。前端需重新构建 `dist`。
++- 本地开发可直接使用 `./scripts/dev-services.sh start`（数据与二进制在 `.cache/services/`，已从 Git 排除）。
++- 生产配置项无新增、无变更。
++
++## 6. 测试结果
++
++- 后端：`npm run backend:test` 130 项全部通过（含新增 3 项资源状态校验回归）。
++- 前端：`npm run test:frontend` 2 项通过；`vue-tsc --noEmit` 无错误；`npm run build` 成功（仅既有 chunk 体积警告）。
++- 实库验证：本地 PostgreSQL 上执行 `select(Wkd)...with_for_update(of=Wkd)` 行锁成功；登录后用 `RUNNING` 创建机台成功、`DEVELOPING` 被 422 拒绝。
++
++## 7. 已知限制
++
++- 草稿为单槽位：同一用户同时只能有一份新建草稿；附件不随草稿恢复。
++- 幂等键哈希为前端本地计算，仅用于防重复创建，不具备保密性需求。
++- 数据统计仍不做权限管控（v1.7 既定行为），任何人可查看与导出。
+diff --git a/package.json b/package.json
+index 3bbf280..bdd7f53 100644
+--- a/package.json
++++ b/package.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "wmp-workaround-platform",
+   "private": true,
+-  "version": "1.7.0",
++  "version": "1.8.0",
+   "type": "module",
+   "scripts": {
+     "dev": "node scripts/dev.mjs",
+diff --git a/scripts/dev-services.sh b/scripts/dev-services.sh
+new file mode 100755
+index 0000000..01bbd35
+--- /dev/null
++++ b/scripts/dev-services.sh
+@@ -0,0 +1,97 @@
++#!/usr/bin/env bash
++# WMP 本地开发环境一键管理：PostgreSQL + RustFS + 后端 + 前端
++# 用法：
++#   ./scripts/dev-services.sh start    启动全部服务（已运行的自动跳过）
++#   ./scripts/dev-services.sh stop     停止全部服务
++#   ./scripts/dev-services.sh status   查看各服务状态
++#   ./scripts/dev-services.sh logs     查看最近日志（按服务分文件，见 .cache/services/logs/）
++set -euo pipefail
++cd "$(dirname "$0")/.."
++ROOT="$PWD"
++SVC="$ROOT/.cache/services"
++PG_BIN="$SVC/postgres/Postgres.app/Contents/Versions/17/bin"
++PGDATA="$SVC/data/postgres"
++RUSTFS_BIN="$SVC/rustfs/rustfs"
++RUSTDATA="$SVC/data/rustfs"
++LOGS="$SVC/logs"
++PY="$ROOT/.venv/bin/python"
++BACKEND_PID="$SVC/backend.pid"
++FRONTEND_PID="$SVC/frontend.pid"
++
++mkdir -p "$LOGS"
++
++alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
++
++wait_for() { # wait_for <描述> <命令...>
++  local desc="$1"; shift
++  for _ in $(seq 1 60); do
++    if "$@" >/dev/null 2>&1; then echo "  ✓ $desc"; return 0; fi
++    sleep 1
++  done
++  echo "  ✗ $desc 超时，请查看 $LOGS 下对应日志" >&2; return 1
++}
++
++pg_running() { "$PG_BIN/pg_ctl" -D "$PGDATA" -s status >/dev/null 2>&1; }
++
++do_start() {
++  echo "==> 1/4 PostgreSQL"
++  if pg_running; then echo "  ✓ 已在运行"; else
++    "$PG_BIN/pg_ctl" -D "$PGDATA" -l "$LOGS/postgres.log" -w -t 60 start
++    echo "  ✓ 已启动"
++  fi
++
++  echo "==> 2/4 RustFS（对象存储 :9000）"
++  if alive "$SVC/rustfs.pid"; then echo "  ✓ 已在运行"; else
++    RUSTFS_ACCESS_KEY=wmp RUSTFS_SECRET_KEY=wmp-secret \
++      nohup "$RUSTFS_BIN" server "$RUSTDATA" >>"$LOGS/rustfs.log" 2>&1 &
++    echo $! > "$SVC/rustfs.pid"
++  fi
++  wait_for "RustFS 就绪" curl -s -o /dev/null http://127.0.0.1:9000
++  if [[ -f "$SVC/configure_storage.py" ]]; then
++    "$PY" "$SVC/configure_storage.py" || echo "  ! 存储配置校验未通过（桶可能已存在则忽略）"
++  fi
++
++  echo "==> 3/4 后端（:8000）"
++  if curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1; then echo "  ✓ 已在运行"; else
++    (cd backend && nohup "$ROOT/.venv/bin/uvicorn" app.main:app --host 127.0.0.1 --port 8000 >>"$LOGS/backend.log" 2>&1 & echo $! > "$BACKEND_PID")
++  fi
++  wait_for "后端就绪" curl -sf http://127.0.0.1:8000/health
++
++  echo "==> 4/4 前端（:7100）"
++  if alive "$FRONTEND_PID"; then echo "  ✓ 已在运行"; else
++    nohup npm run dev -- --host 127.0.0.1 --port 7100 >>"$LOGS/frontend.log" 2>&1 &
++    echo $! > "$FRONTEND_PID"
++  fi
++  wait_for "前端就绪" curl -s -o /dev/null http://127.0.0.1:7100/login
++
++  echo ""
++  echo "全部就绪：前端 http://localhost:7100  后端 API http://127.0.0.1:8000  Swagger /docs"
++}
++
++do_stop() {
++  for name in FRONTEND BACKEND; do
++    pid_file_var="${name}_PID"; pid_file="${!pid_file_var}"
++    if alive "$pid_file"; then kill "$(cat "$pid_file")" 2>/dev/null; echo "已停止 $name (PID $(cat "$pid_file"))"; fi
++    rm -f "$pid_file"
++  done
++  pkill -f "uvicorn app.main:app" 2>/dev/null && echo "已停止后端残留进程" || true
++  if alive "$SVC/rustfs.pid"; then kill "$(cat "$SVC/rustfs.pid")" 2>/dev/null; echo "已停止 RustFS"; fi
++  rm -f "$SVC/rustfs.pid"
++  if pg_running; then "$PG_BIN/pg_ctl" -D "$PGDATA" -m fast -w stop; echo "已停止 PostgreSQL"; fi
++}
++
++do_status() {
++  pg_running && echo "PostgreSQL  : 运行中" || echo "PostgreSQL  : 未运行"
++  alive "$SVC/rustfs.pid" && echo "RustFS      : 运行中 (PID $(cat "$SVC/rustfs.pid"))" || echo "RustFS      : 未运行"
++  curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1 && echo "后端 :8000  : 运行中" || echo "后端 :8000  : 未运行"
++  alive "$FRONTEND_PID" && echo "前端 :7100  : 运行中 (PID $(cat "$FRONTEND_PID"))" || echo "前端 :7100  : 未运行"
++  curl -sf http://127.0.0.1:8000/health >/dev/null 2>&1 && echo "健康检查    : /health 通过" || echo "健康检查    : 未通过"
++}
++
++case "${1:-}" in
++  start)  do_start ;;
++  stop)   do_stop ;;
++  status) do_status ;;
++  logs)   ls -lt "$LOGS" | head -10 ;;
++  *) echo "用法: $0 {start|stop|status|logs}" >&2; exit 1 ;;
++esac
+diff --git a/src/views/HomeView.vue b/src/views/HomeView.vue
+index b67b6b8..de3e460 100644
+--- a/src/views/HomeView.vue
++++ b/src/views/HomeView.vue
+@@ -50,7 +50,7 @@ watch(() => store.projectId, load)
+ 
+ <template>
+   <div v-loading="loading" class="home-page">
+-    <section class="welcome-section"><div><span class="welcome-overline">{{ dateLabel }}</span><h1>{{ greeting }}，{{ store.session?.username }}</h1><p>当前项目有 <strong>{{ summary.pending }} 项</strong> 规避措施等待处理，保持每一个交付清晰可控。</p></div><el-button v-if="can('wkd.create') && !isInitializationProject" type="primary" @click="router.push('/wkd/new')"><el-icon><Plus /></el-icon>登记 WKD</el-button></section>
++    <section class="welcome-section"><div><span class="welcome-overline">{{ dateLabel }}</span><h1>{{ greeting }}，{{ store.session?.username }}</h1><p>当前项目有 <strong>{{ summary.pending }} 项</strong> 规避措施等待处理，保持每一个交付清晰可控。</p></div></section>
+     <el-alert v-if="isInitializationProject" title="当前为用户初始化项目，仅用于账号落地。请切换到真实项目处理 WKD 和构建；全局项目、成员与角色管理仍可使用。" type="info" :closable="false" show-icon class="initialization-note" />
+     <section class="home-metrics metric-grid">
+       <div class="metric-card"><div class="metric-card-top"><span>规避措施总数</span><span class="metric-icon"><el-icon><Files /></el-icon></span></div><div class="metric-card-value"><strong>{{ summary.total }}</strong><small>当前项目</small></div><div class="metric-card-note">本月新增 {{ summary.monthly_new }} 项</div></div>
+diff --git a/src/views/LoginView.vue b/src/views/LoginView.vue
+index 3fbd97e..915e578 100644
+--- a/src/views/LoginView.vue
++++ b/src/views/LoginView.vue
+@@ -79,7 +79,7 @@ async function oauthLogin() {
+ 
+ <style scoped>
+ .login-page { min-height: 100vh; display: grid; grid-template-columns: minmax(500px, 1.04fr) minmax(560px, .96fr); background: #fff; }
+-.login-brand-panel { background: #111b31; color: #fff; position: relative; overflow: hidden; padding: 56px; display: flex; align-items: center; }
++.login-brand-panel { background: #111b31; color: #fff; position: relative; overflow: hidden; padding: 56px; display: flex; align-items: center; justify-content: center; }
+ .login-brand { display: flex; align-items: center; gap: 22px; position: relative; z-index: 1; }
+ #app .login-brand .brand-mark { width: 54px; height: 54px; flex: none; border-radius: 14px; font-size: 25px; }
+ #app .login-brand-copy h1 { margin: 0; color: #fff; font-size: clamp(28px, 2.6vw, 38px); font-weight: 600; line-height: 1.4; letter-spacing: 1px; }
+diff --git a/src/views/WkdDetailView.vue b/src/views/WkdDetailView.vue
+index 7fb20cd..1ba7947 100644
+--- a/src/views/WkdDetailView.vue
++++ b/src/views/WkdDetailView.vue
+@@ -198,14 +198,21 @@ function applyDemo(id: string) {
+ }
+ 
+ function draftSessionKey() { return `wmp-upload-session:${draftUserId()}:${form.project_id}` }
+-function creationKeyStorageKey() { return `wmp-create-key:${draftUserId()}:${form.project_id}` }
+-function creationIdempotencyKey() {
+-  let value = sessionStorage.getItem(creationKeyStorageKey())
+-  if (!value) {
+-    value = createUuid()
+-    sessionStorage.setItem(creationKeyStorageKey(), value)
++// 幂等键由创建内容哈希生成：相同内容重复提交命中同一键（网络重试/双击安全回放），
++// 内容修改后自动变成新键，避免"同一幂等键不能用于不同的创建请求"的 409。
++function contentHash(text: string) {
++  let h1 = 0xdeadbeef, h2 = 0x41c6ce57
++  for (let i = 0; i < text.length; i++) {
++    const ch = text.charCodeAt(i)
++    h1 = Math.imul(h1 ^ ch, 2654435761)
++    h2 = Math.imul(h2 ^ ch, 1597334677)
+   }
+-  return value
++  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
++  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
++  return (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16)
++}
++function creationIdempotencyKey(payload: Record<string, unknown>) {
++  return `create-${draftUserId()}-${form.project_id}-${contentHash(JSON.stringify(payload))}`
+ }
+ 
+ async function restoreDraftUploadSession() {
+@@ -236,7 +243,6 @@ async function ensureUploadSession() {
+ 
+ function clearCreatedSessionReferences() {
+   sessionStorage.removeItem(draftSessionKey())
+-  sessionStorage.removeItem(creationKeyStorageKey())
+   uploadSessionId.value = ''
+ }
+ 
+@@ -280,7 +286,38 @@ function restoreLocalDraft() {
+   if (!draft) return
+   Object.assign(form, JSON.parse(JSON.stringify(draft.form)))
+   notes[form.status] = sanitizeRichText(draft.note)
+-  ElMessage.info('已恢复保存在当前浏览器的本地草稿')
++  lastDraftSavedAt.value = draft.savedAt
++  ElMessage.info(`已恢复保存在当前浏览器的本地草稿（保存于 ${formatDateTime(draft.savedAt)}）`)
++}
++
++// 本标签页最后写入/恢复的草稿时间，用于识别"来自其他页面的草稿"，避免静默覆盖。
++const lastDraftSavedAt = ref<string | null>(null)
++
++function localDraftPayload() {
++  return {
++    status: form.status, visitKey: currentVisitKey.value, lockVersion: form.lock_version,
++    form: JSON.parse(JSON.stringify(form)), note: sanitizeRichText(notes[form.status]), savedAt: new Date().toISOString(),
++  }
++}
++
++async function saveDraftOnly() {
++  if (hasPendingOperationFiles.value) { ElMessage.warning('原子操作文件仍在读取，请稍候'); return }
++  const draft = localDraftPayload()
++  if (new Blob([JSON.stringify(draft)]).size > 4 * 1024 * 1024) {
++    ElMessage.warning('本地草稿超过 4 MB，无法可靠保存。请使用“提交自验证”或“选择软件经理并提交”直接提交，文件内容不会被静默删除')
++    return
++  }
++  const existing = readWkdDraft(draftUserId(), draftWkdId(), form.status, currentVisitKey.value, form.lock_version)
++  if (existing && existing.savedAt !== lastDraftSavedAt.value) {
++    try {
++      await ElMessageBox.confirm(
++        `当前浏览器已有一份保存于 ${formatDateTime(existing.savedAt)} 的草稿（可能来自其他页面），继续保存将覆盖它。`,
++        '覆盖草稿确认', { confirmButtonText: '覆盖保存', cancelButtonText: '取消', type: 'warning' })
++    } catch { return }
++  }
++  saveWkdDraft(draftUserId(), draftWkdId(), draft)
++  lastDraftSavedAt.value = draft.savedAt
++  ElMessage.success('草稿已保存，再次进入「新建WKD」可自动恢复')
+ }
+ 
+ onMounted(async () => {
+@@ -478,25 +515,26 @@ async function persist(): Promise<string | null> {
+   try {
+     if (creating) {
+       if (demoMode.value) upsertDemoWkd()
+-      else applyDetail(await api.post<Record<string, unknown>>('/wkds', {
+-        ...currentPayload, note: hasRichContent(notes.NEW_WKD) ? sanitizeRichText(notes.NEW_WKD) : null,
+-        attachment_ids: readyAttachmentIds, idempotency_key: creationIdempotencyKey(),
+-      }))
++      else {
++        const requestBody = {
++          ...currentPayload, note: hasRichContent(notes.NEW_WKD) ? sanitizeRichText(notes.NEW_WKD) : null,
++          attachment_ids: readyAttachmentIds,
++        }
++        applyDetail(await api.post<Record<string, unknown>>('/wkds', { ...requestBody, idempotency_key: creationIdempotencyKey(requestBody) }))
++      }
+       savedSnapshot = currentSnapshot
+       clearLocalDraft('NEW_WKD', 'new')
+       clearCreatedSessionReferences()
+       await router.replace(`/wkd/${form.id}`)
+       ElMessage.success(`WKD 已创建${readyAttachmentIds.length ? `，并绑定 ${readyAttachmentIds.length} 个附件` : ''}`)
+     } else {
+-      const draft = {
+-        status: form.status, visitKey: currentVisitKey.value, lockVersion: form.lock_version,
+-        form: JSON.parse(JSON.stringify(form)), note: sanitizeRichText(notes[form.status]), savedAt: new Date().toISOString(),
+-      }
++      const draft = localDraftPayload()
+       if (new Blob([JSON.stringify(draft)]).size > 4 * 1024 * 1024) {
+         ElMessage.warning('本地草稿超过 4 MB，无法可靠保存。请使用“提交自验证”或“选择软件经理并提交”直接提交，文件内容不会被静默删除')
+         return null
+       }
+       saveWkdDraft(draftUserId(), draftWkdId(), draft)
++      lastDraftSavedAt.value = draft.savedAt
+       ElMessage.success('草稿已保存在当前浏览器，未提交后端')
+     }
+     return form.id
+@@ -682,6 +720,7 @@ async function downloadAttachment(item: AttachmentItem) {
+         <p><template v-if="!isNew"><span class="mono">{{ form.number }}</span><span>·</span></template>{{ form.project || '未选择项目' }}<template v-if="form.version"> / {{ form.version }}</template></p>
+       </div>
+       <div class="detail-actions">
++        <el-button v-if="isNew && canEdit" :disabled="hasPendingAttachments" @click="saveDraftOnly">保存草稿</el-button>
+         <el-button v-if="canEdit" :loading="saving" :disabled="isNew && hasPendingAttachments" @click="save"><el-icon><Check /></el-icon>{{ isNew ? '保存并创建' : '保存本地草稿' }}</el-button>
+         <el-button v-if="form.status==='NEW_WKD' && can('wkd.submit') && isCurrentHandler" type="primary" :loading="saving" :disabled="hasPendingAttachments" @click="transition('submit_verify')">提交自验证<el-icon><Right /></el-icon></el-button>
+         <template v-if="form.status==='REVIEW' && canReviewCurrent"><el-button :loading="saving" :disabled="hasPendingAttachments" @click="transition('reject')">审核驳回</el-button><el-button type="primary" :loading="saving" :disabled="hasPendingAttachments" @click="transition('approve')"><el-icon><Check /></el-icon>审核通过</el-button></template>
+@@ -700,14 +739,14 @@ async function downloadAttachment(item: AttachmentItem) {
+     <div class="detail-workspace">
+       <div class="left-column">
+         <section class="surface-card operation-section" :class="{disabled: form.execution_type==='MANUAL'}">
+-          <div class="card-header"><div><h3>原子操作编排</h3><p>拖拽卡片调整执行顺序，所有关联机台共用此配置</p></div><div class="stage-select"><span>执行阶段</span><el-select v-model="form.stage" :disabled="!canEdit || form.execution_type==='MANUAL'" style="width:150px"><el-option v-for="(label,key) in stageLabels" :key="key" :label="label" :value="key" /></el-select></div></div>
++          <div class="card-header"><div><h3>原子操作编排</h3><p>拖拽卡片调整执行顺序，所有关联机台共用此配置</p></div><div class="stage-select"><span v-if="form.execution_type!=='MANUAL'" class="operation-count">已添加 {{ form.operations.length }} 个操作</span><span>执行阶段</span><el-select v-model="form.stage" :disabled="!canEdit || form.execution_type==='MANUAL'" style="width:150px"><el-option v-for="(label,key) in stageLabels" :key="key" :label="label" :value="key" /></el-select></div></div>
+           <div v-if="form.stage==='custom'" class="custom-stage"><span>自定义阶段名称</span><el-input v-model="form.custom_stage_name" :disabled="!canEdit" /></div>
+           <div v-if="form.execution_type==='MANUAL'" class="manual-empty"><el-icon><User /></el-icon><strong>人工操作</strong><p>当前执行类型无需选择阶段或编排原子操作</p></div>
+           <div v-else class="operation-layout">
+             <div class="operation-canvas" :class="{readonly:!canEdit}">
+               <div v-if="!form.operations.length" class="operation-empty"><el-icon><Plus /></el-icon><p>从右侧添加第一个原子操作</p></div>
+-              <div v-for="(op,index) in form.operations" :key="op.id" class="operation-card" :draggable="canEdit" @dragstart="dragged=index" @dragend="dragged=null" @dragover.prevent @drop="dropOperation(index)">
+-                <div class="operation-card-head"><span v-if="canEdit" class="drag-handle"><el-icon><Rank /></el-icon></span><span class="operation-number">{{ String(index+1).padStart(2,'0') }}</span><span class="operation-type-icon" :class="operationMeta[op.type].tone"><el-icon><component :is="operationMeta[op.type].icon" /></el-icon></span><strong>{{ operationMeta[op.type].label }}</strong><el-button v-if="canEdit" text title="删除操作" class="operation-delete" @click="form.operations.splice(index,1)"><el-icon><Delete /></el-icon></el-button></div>
++              <div v-for="(op,index) in form.operations" :key="op.id" class="operation-card" :class="{dragging: dragged===index}" @dragover.prevent @drop="dropOperation(index)">
++                <div class="operation-card-head"><span v-if="canEdit" class="drag-handle" draggable="true" title="按住此处拖拽调整顺序" @dragstart="dragged=index" @dragend="dragged=null"><el-icon><Rank /></el-icon></span><span class="operation-number">{{ String(index+1).padStart(2,'0') }}</span><span class="operation-type-icon" :class="operationMeta[op.type].tone"><el-icon><component :is="operationMeta[op.type].icon" /></el-icon></span><strong>{{ operationMeta[op.type].label }}</strong><el-button v-if="canEdit" text title="删除操作" class="operation-delete" @click="form.operations.splice(index,1)"><el-icon><Delete /></el-icon></el-button></div>
+                 <div class="operation-params">
+                   <template v-if="op.type==='UPLOAD_FILE'">
+                     <label class="wide">目标目录<el-input v-model="op.params.target_path" :disabled="!canEdit" placeholder="/root/temp" /></label>
+@@ -806,17 +845,16 @@ async function downloadAttachment(item: AttachmentItem) {
+           <el-form-item label="规避措施描述" required><el-input v-model="form.description" type="textarea" :rows="3" :disabled="!canEdit" /></el-form-item>
+           <div class="property-grid"><el-form-item label="问题单号"><el-input v-model="form.issue_no" :disabled="!canEdit" /></el-form-item><el-form-item label="需求单号"><el-input v-model="form.requirement_no" :disabled="!canEdit" /></el-form-item><el-form-item label="问题发现版本" :required="!!form.issue_no"><el-select v-model="form.found_version_id" :disabled="!canEdit" filterable clearable><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></el-form-item><el-form-item label="规划解决版本"><el-select v-model="form.planned_version_id" :disabled="!canEdit" filterable clearable><el-option v-for="item in versionOptions" :key="item.id" :label="item.number || item.name" :value="item.id" /></el-select></el-form-item></div>
+ 
++          <div class="form-section-title">执行属性</div>
++          <el-form-item label="执行类型" required><el-select v-model="form.execution_type" :disabled="!canEdit" @change="executionTypeChanged"><el-option label="自动化执行" value="AUTOMATED" /><el-option label="人工操作" value="MANUAL" /></el-select></el-form-item>
++          <div class="property-grid"><el-form-item label="活动场景" required><el-select v-model="form.activity_scene" :disabled="!canEdit"><el-option v-for="item in ['首版本部署','ES集成活动','常规版本升级']" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="类型" required><el-select v-model="form.measure_type" :disabled="!canEdit"><el-option label="事前规避措施" value="事前规避措施" /><el-option label="事后恢复措施" value="事后恢复措施" /></el-select></el-form-item></div>
++
+           <div class="form-section-title">业务归属</div>
+           <div class="property-grid"><el-form-item label="所属项目" required><el-input :model-value="form.project" readonly /></el-form-item><el-form-item label="所属版本" required><el-input :model-value="form.version" readonly /></el-form-item></div>
+-          <el-form-item label="关联机台" required><el-select v-model="form.machine_ids" multiple :disabled="!canEdit"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
++          <el-form-item label="关联机台" required><el-select v-model="form.machine_ids" multiple filterable collapse-tags :disabled="!canEdit"><el-option v-for="item in machineOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+           <el-form-item label="所属子系统" required><el-select v-model="form.subsystem_id" :disabled="!canEdit" filterable><el-option v-for="item in subsystemOptions" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item>
+           <el-form-item label="责任人"><el-input :model-value="ownerDisplay" class="identity-input" readonly /></el-form-item>
+           <el-form-item label="当前处理人"><el-input :model-value="currentHandlerDisplay" class="identity-input" readonly /></el-form-item>
+-
+-          <div class="form-section-title">执行属性</div>
+-          <el-form-item label="执行类型" required><el-select v-model="form.execution_type" :disabled="!canEdit" @change="executionTypeChanged"><el-option label="自动化执行" value="AUTOMATED" /><el-option label="人工操作" value="MANUAL" /></el-select></el-form-item>
+-          <div class="property-grid"><el-form-item label="活动场景" required><el-select v-model="form.activity_scene" :disabled="!canEdit"><el-option v-for="item in ['首版本部署','ES集成活动','常规版本升级']" :key="item" :label="item" :value="item" /></el-select></el-form-item><el-form-item label="类型" required><el-select v-model="form.measure_type" :disabled="!canEdit"><el-option label="事前规避措施" value="事前规避措施" /><el-option label="事后恢复措施" value="事后恢复措施" /></el-select></el-form-item></div>
+-          <el-form-item label="备注"><el-input v-model="form.remark" type="textarea" :rows="2" :disabled="!canEdit" /></el-form-item>
+         </el-form>
+       </aside>
+     </div>
+@@ -854,7 +892,7 @@ async function downloadAttachment(item: AttachmentItem) {
+ .custom-stage { display:flex; align-items:center; gap:10px; background:#f6f8ff; border-radius:7px; padding:11px 12px; margin-top:15px; }.custom-stage .el-input { max-width:360px; }
+ .operation-layout { display:grid; grid-template-columns:minmax(0,1fr) 190px; gap:15px; margin-top:17px; }
+ .operation-canvas { min-width:0; display:flex; flex-direction:column; gap:10px; }.operation-empty { min-height:155px; border:1px dashed #dce2ec; border-radius:8px; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#a0a8b7; font-size:10px; }.operation-empty .el-icon { font-size:22px; margin-bottom:6px; }
+-.operation-card { border:1px solid #e3e8f0; border-radius:9px; background:#fff; overflow:hidden; }.operation-card[draggable=true] { cursor:grab; }.operation-card[draggable=true]:active { cursor:grabbing; }.operation-card-head { display:flex; align-items:center; gap:8px; padding:10px 12px; background:#fafbfc; border-bottom:1px solid #edf0f4; }.operation-card-head strong { font-size:11px; font-weight:600; }.drag-handle { color:#b0b8c5; display:flex; }.operation-number { color:#98a2b3; font-size:9px; font-variant-numeric:tabular-nums; }.operation-delete { margin-left:auto; color:#a0a8b7; }
++.operation-card { border:1px solid #e3e8f0; border-radius:9px; background:#fff; overflow:hidden; }.operation-card.dragging { opacity:.55; border-style:dashed; }.operation-card-head { display:flex; align-items:center; gap:8px; padding:10px 12px; background:#fafbfc; border-bottom:1px solid #edf0f4; }.operation-card-head strong { font-size:11px; font-weight:600; }.drag-handle { color:#b0b8c5; display:flex; cursor:grab; }.drag-handle:active { cursor:grabbing; }.operation-number { color:#98a2b3; font-size:9px; font-variant-numeric:tabular-nums; }.operation-delete { margin-left:auto; color:#a0a8b7; }.operation-count { color:#667085; font-size:11px; background:#f2f5f9; border-radius:10px; padding:3px 10px; }
+ .operation-type-icon { width:25px; height:25px; display:inline-grid; place-items:center; border-radius:6px; flex-shrink:0; }.operation-type-icon.blue { color:#315efb; background:#edf0ff; }.operation-type-icon.violet { color:#7957d5; background:#f3efff; }.operation-type-icon.green { color:#16865b; background:#ecf8f2; }
+ .operation-params { display:grid; grid-template-columns:1fr 1fr; gap:10px 12px; padding:12px; }.operation-params label { display:flex; flex-direction:column; gap:5px; color:#7a8494; font-size:9px; min-width:0; }.operation-params .wide { grid-column:1/-1; }
+ .upload-operation-files { border-top:1px dashed #e3e8f0; padding-top:11px; }.upload-files-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }.upload-files-heading>div:first-child { display:flex; flex-direction:column; gap:3px; }.upload-files-heading strong { color:#475467; font-size:11px; }.upload-files-heading span { color:#98a2b3; font-size:9px; }.operation-file-upload { flex-shrink:0; }.upload-file-list { display:flex; flex-direction:column; gap:7px; }.upload-file-item { display:flex; align-items:center; gap:9px; min-height:45px; padding:7px 9px; border:1px solid #e8ecf2; border-radius:7px; background:#fafbfc; }.upload-file-item>.el-icon { color:#667085; font-size:17px; }.upload-file-item>div { min-width:0; display:flex; flex:1; flex-direction:column; gap:2px; }.upload-file-item strong { overflow:hidden; color:#344054; font-size:11px; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }.upload-file-item span { color:#98a2b3; font-size:9px; }.upload-file-item .el-button { flex-shrink:0; }.upload-file-empty { padding:15px; border:1px dashed #e3e8f0; border-radius:7px; color:#98a2b3; font-size:10px; text-align:center; }

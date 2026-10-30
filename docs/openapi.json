@@ -3,7 +3,7 @@
   "info": {
     "title": "WMP 规避措施管理平台",
     "description": "WKD 全生命周期、原子操作编排、项目级 RBAC、构建制品和 RustFS 文件接口。除认证与健康检查外，所有接口均需 Bearer Token，并在服务端执行按钮权限校验。",
-    "version": "1.7.0"
+    "version": "1.8.0"
   },
   "paths": {
     "/api/v1/auth/login": {
@@ -3891,18 +3891,25 @@
             "title": "Owner Id"
           },
           "status": {
-            "type": "string",
-            "enum": [
-              "ENABLED",
-              "DISABLED",
-              "STOPPED",
-              "DEVELOPING",
-              "RELEASED",
-              "ARCHIVED",
-              "INITIALIZING"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "ENABLED",
+                  "DISABLED",
+                  "RUNNING",
+                  "MAINTENANCE",
+                  "STOPPED",
+                  "DEVELOPING",
+                  "RELEASED",
+                  "ARCHIVED"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Status",
-            "default": "ENABLED"
+            "title": "Status"
           },
           "number": {
             "anyOf": [
