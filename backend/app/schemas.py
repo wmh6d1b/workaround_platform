@@ -260,7 +260,7 @@ class EntityInput(BaseModel):
     code: str | None = Field(default=None, max_length=80, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
     project_id: str | None = None
     owner_id: str | None = None
-    status: Literal['ENABLED', 'DISABLED', 'STOPPED', 'DEVELOPING', 'RELEASED', 'ARCHIVED', 'INITIALIZING'] = 'ENABLED'
+    status: Literal['ENABLED', 'DISABLED', 'RUNNING', 'MAINTENANCE', 'STOPPED', 'DEVELOPING', 'RELEASED', 'ARCHIVED'] | None = None
     number: str | None = Field(default=None, max_length=60)
     model: str | None = Field(default=None, max_length=100)
     location: str | None = Field(default=None, max_length=120)

@@ -39,7 +39,8 @@ class InitializationProjectTests(unittest.TestCase):
 
     def test_wkd_transition_is_blocked_even_for_superuser(self):
         wkd = SimpleNamespace(id='wkd-1', project_id='init-project', status=WkdStatus.NEW_WKD)
-        self.db.get.side_effect = [wkd, self.project]
+        self.db.get.return_value = self.project
+        self.db.scalar.side_effect = [wkd, self.project]
         self.assert_blocked(lambda: transition('wkd-1', 'disable', SimpleNamespace(), self.db, self.admin))
         self.assertEqual(wkd.status, WkdStatus.NEW_WKD)
 

@@ -15,6 +15,23 @@ business_permissions = {
     'machines': 'business.machine',
     'subsystems': 'business.subsystem',
 }
+RESOURCE_STATUSES = {
+    'projects': ('ENABLED', 'DISABLED'),
+    'versions': ('DEVELOPING', 'RELEASED', 'ARCHIVED'),
+    'machines': ('RUNNING', 'MAINTENANCE', 'STOPPED'),
+    'subsystems': ('ENABLED', 'DISABLED'),
+}
+
+
+def validate_resource_status(resource: str, status: str | None) -> str:
+    allowed = RESOURCE_STATUSES.get(resource)
+    if not allowed:
+        return status or 'ENABLED'
+    if status is None:
+        return allowed[0]
+    if status not in allowed:
+        raise HTTPException(422, f'该资源状态仅支持：{"、".join(allowed)}')
+    return status
 
 
 def entity_out(item) -> dict:
@@ -129,6 +146,7 @@ def create_business(resource: str, payload: EntityInput, db: Session = Depends(g
             raise HTTPException(422, '必须指定所属项目')
         authorize(db, user, f'{business_permissions[resource]}.edit', payload.project_id)
         ensure_operational_project(db, payload.project_id)
+    validate_resource_status(resource, payload.status)
     values = payload.model_dump(exclude_none=True)
     if resource == 'versions':
         values['number'] = payload.number or payload.name
@@ -158,6 +176,7 @@ def update_business(resource: str, item_id: str, payload: EntityInput, db: Sessi
         ensure_operational_project(db, item.project_id)
         if payload.project_id and payload.project_id != item.project_id:
             raise HTTPException(403, '不允许将业务数据转移到其他项目')
+    validate_resource_status(resource, payload.status)
     excluded = {'name'} if resource == 'versions' else set()
     if resource != 'projects':
         excluded = {*excluded, 'project_id'}

@@ -119,7 +119,7 @@ def get_wkd(wkd_id: str, db: Session = Depends(get_db), user: User = Depends(cur
 
 @router.post('/{wkd_id}/transitions/{action}', summary='状态流转；所有操作必须携带 lock_version，提交类携带完整数据，指派类携带 manager_id')
 def transition(wkd_id: str, action: str, payload: TransitionInput, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    wkd = db.get(Wkd, wkd_id, with_for_update=True)
+    wkd = db.scalar(select(Wkd).where(Wkd.id == wkd_id).with_for_update(of=Wkd))
     if not wkd: raise HTTPException(404, 'WKD 不存在')
     from ..lifecycle import RULES, transition_rule
     if action not in RULES: raise HTTPException(404, '未知流转操作')

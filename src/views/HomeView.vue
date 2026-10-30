@@ -50,7 +50,7 @@ watch(() => store.projectId, load)
 
 <template>
   <div v-loading="loading" class="home-page">
-    <section class="welcome-section"><div><span class="welcome-overline">{{ dateLabel }}</span><h1>{{ greeting }}，{{ store.session?.username }}</h1><p>当前项目有 <strong>{{ summary.pending }} 项</strong> 规避措施等待处理，保持每一个交付清晰可控。</p></div><el-button v-if="can('wkd.create') && !isInitializationProject" type="primary" @click="router.push('/wkd/new')"><el-icon><Plus /></el-icon>登记 WKD</el-button></section>
+    <section class="welcome-section"><div><span class="welcome-overline">{{ dateLabel }}</span><h1>{{ greeting }}，{{ store.session?.username }}</h1><p>当前项目有 <strong>{{ summary.pending }} 项</strong> 规避措施等待处理，保持每一个交付清晰可控。</p></div></section>
     <el-alert v-if="isInitializationProject" title="当前为用户初始化项目，仅用于账号落地。请切换到真实项目处理 WKD 和构建；全局项目、成员与角色管理仍可使用。" type="info" :closable="false" show-icon class="initialization-note" />
     <section class="home-metrics metric-grid">
       <div class="metric-card"><div class="metric-card-top"><span>规避措施总数</span><span class="metric-icon"><el-icon><Files /></el-icon></span></div><div class="metric-card-value"><strong>{{ summary.total }}</strong><small>当前项目</small></div><div class="metric-card-note">本月新增 {{ summary.monthly_new }} 项</div></div>

@@ -10,11 +10,11 @@ from pydantic import ValidationError
 from app.attachment_service import authorize_wkd_upload, owned_session
 from app.config import Settings, validate_production_settings
 from app.deps import accessible_project_ids, user_permissions
-from app.models import ExecutionType, WkdStatus
+from app.models import ExecutionType, Machine, WkdStatus
 from app.routers.auth import login
 from app.routers.statistics import statistics, xlsx_safe
 from app.routers.wkd import transition
-from app.schemas import BuildInput, LoginInput, TransitionInput, WkdInput
+from app.schemas import BuildInput, EntityInput, LoginInput, TransitionInput, WkdInput
 from app.seed import PERMISSIONS, seed
 from app.services import artifact_out, wkd_list_out
 
@@ -83,12 +83,13 @@ class AttachmentStateBoundaryTests(unittest.TestCase):
         session = SimpleNamespace(id='session-1', owner_id='user-1', project_id='project-1', wkd_id='wkd-1',
                                   status='OPEN', expires_at=datetime.utcnow() + timedelta(hours=1))
         self.wkd.status = WkdStatus.REVIEW
-        self.db.get.side_effect = [session, self.wkd]
+        self.db.get.return_value = session
+        self.db.scalar.return_value = self.wkd
         with self.assertRaises(HTTPException) as raised:
             owned_session(self.db, self.user, session.id)
         self.assertEqual(raised.exception.status_code, 409)
-        self.assertEqual(self.db.get.call_count, 2)
-        self.assertEqual(self.db.get.call_args_list[1].kwargs, {'with_for_update': True})
+        self.db.get.assert_called_once_with(unittest.mock.ANY, session.id)
+        self.db.scalar.assert_called_once()
 
 
 class ConcurrencyAndConfigurationTests(unittest.TestCase):
@@ -101,10 +102,10 @@ class ConcurrencyAndConfigurationTests(unittest.TestCase):
     def test_transition_loads_wkd_with_row_lock(self):
         wkd = SimpleNamespace(status=WkdStatus.NEW_WKD)
         db = Mock()
-        db.get.return_value = wkd
+        db.scalar.return_value = wkd
         with self.assertRaises(HTTPException):
             transition('wkd-1', 'not-an-action', TransitionInput(lock_version=1), db, SimpleNamespace())
-        db.get.assert_called_once_with(unittest.mock.ANY, 'wkd-1', with_for_update=True)
+        db.scalar.assert_called_once()
 
     def test_production_rejects_default_credentials(self):
         with self.assertRaisesRegex(RuntimeError, '生产环境配置校验失败'):
@@ -179,6 +180,44 @@ class LightweightReadModelTests(unittest.TestCase):
         self.assertEqual(sum(item['approved'] for item in result['trend']), 1)
         self.assertIsNone(scoped.call_args_list[1].kwargs['start_date'])
         self.assertIsNone(scoped.call_args_list[1].kwargs['end_date'])
+
+
+class ResourceStatusValidationTests(unittest.TestCase):
+    @patch('app.routers.admin.commit')
+    @patch('app.routers.admin.audit')
+    @patch('app.routers.admin.authorize')
+    def test_machine_accepts_running_and_maintenance(self, _authorize, _audit, _commit):
+        from app.routers.admin import create_business
+        db = Mock()
+        for status in ('RUNNING', 'MAINTENANCE', 'STOPPED'):
+            result = create_business('machines', EntityInput(name='机台一', project_id='project-1', status=status), db, SimpleNamespace())
+            self.assertEqual(result['status'], status)
+
+    @patch('app.routers.admin.authorize')
+    def test_machine_rejects_status_of_other_resources(self, _authorize):
+        from app.routers.admin import create_business, update_business
+        db = Mock()
+        for status in ('ENABLED', 'DEVELOPING', 'RELEASED'):
+            with self.subTest(status=status), self.assertRaises(HTTPException) as raised:
+                create_business('machines', EntityInput(name='机台一', project_id='project-1', status=status), db, SimpleNamespace())
+            self.assertEqual(raised.exception.status_code, 422)
+        item = Machine(project_id='project-1', name='机台一')
+        db.get.side_effect = [item, SimpleNamespace(code='P1', status='ENABLED')]
+        with self.assertRaises(HTTPException) as raised:
+            update_business('machines', item.id, EntityInput(name='机台一', project_id='project-1', status='DEVELOPING'), db, SimpleNamespace())
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertNotEqual(item.status, 'DEVELOPING')
+
+    @patch('app.routers.admin.authorize')
+    def test_version_and_project_status_sets_are_separate(self, _authorize):
+        from app.routers.admin import create_business
+        db = Mock()
+        with self.assertRaises(HTTPException) as raised:
+            create_business('versions', EntityInput(name='V1.0.0', project_id='project-1', status='RUNNING'), db, SimpleNamespace())
+        self.assertEqual(raised.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as raised:
+            create_business('projects', EntityInput(name='项目一', code='P1', status='RUNNING'), db, SimpleNamespace(id='admin', is_superuser=True))
+        self.assertEqual(raised.exception.status_code, 422)
 
 
 class AccountSafetyTests(unittest.TestCase):

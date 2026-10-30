@@ -86,7 +86,7 @@ def owned_session(db: Session, user: User, session_id: str, permission: str = 'f
     authorize(db, user, permission, session.project_id)
     if session.wkd_id:
         # Lock the WKD so status transitions and completion of an upload cannot cross.
-        wkd = db.get(Wkd, session.wkd_id, with_for_update=True)
+        wkd = db.scalar(select(Wkd).where(Wkd.id == session.wkd_id).with_for_update(of=Wkd))
         if not wkd:
             raise HTTPException(404, 'WKD 不存在')
         authorize_wkd_upload(db, user, wkd)

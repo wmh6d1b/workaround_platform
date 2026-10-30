@@ -198,14 +198,21 @@ function applyDemo(id: string) {
 }
 
 function draftSessionKey() { return `wmp-upload-session:${draftUserId()}:${form.project_id}` }
-function creationKeyStorageKey() { return `wmp-create-key:${draftUserId()}:${form.project_id}` }
-function creationIdempotencyKey() {
-  let value = sessionStorage.getItem(creationKeyStorageKey())
-  if (!value) {
-    value = createUuid()
-    sessionStorage.setItem(creationKeyStorageKey(), value)
+// 幂等键由创建内容哈希生成：相同内容重复提交命中同一键（网络重试/双击安全回放），
+// 内容修改后自动变成新键，避免"同一幂等键不能用于不同的创建请求"的 409。
+function contentHash(text: string) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
   }
-  return value
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16)
+}
+function creationIdempotencyKey(payload: Record<string, unknown>) {
+  return `create-${draftUserId()}-${form.project_id}-${contentHash(JSON.stringify(payload))}`
 }
 
 async function restoreDraftUploadSession() {
@@ -236,7 +243,6 @@ async function ensureUploadSession() {
 
 function clearCreatedSessionReferences() {
   sessionStorage.removeItem(draftSessionKey())
-  sessionStorage.removeItem(creationKeyStorageKey())
   uploadSessionId.value = ''
 }
 
@@ -280,7 +286,38 @@ function restoreLocalDraft() {
   if (!draft) return
   Object.assign(form, JSON.parse(JSON.stringify(draft.form)))
   notes[form.status] = sanitizeRichText(draft.note)
-  ElMessage.info('已恢复保存在当前浏览器的本地草稿')
+  lastDraftSavedAt.value = draft.savedAt
+  ElMessage.info(`已恢复保存在当前浏览器的本地草稿（保存于 ${formatDateTime(draft.savedAt)}）`)
+}
+
+// 本标签页最后写入/恢复的草稿时间，用于识别"来自其他页面的草稿"，避免静默覆盖。
+const lastDraftSavedAt = ref<string | null>(null)
+
+function localDraftPayload() {
+  return {
+    status: form.status, visitKey: currentVisitKey.value, lockVersion: form.lock_version,
+    form: JSON.parse(JSON.stringify(form)), note: sanitizeRichText(notes[form.status]), savedAt: new Date().toISOString(),
+  }
+}
+
+async function saveDraftOnly() {
+  if (hasPendingOperationFiles.value) { ElMessage.warning('原子操作文件仍在读取，请稍候'); return }
+  const draft = localDraftPayload()
+  if (new Blob([JSON.stringify(draft)]).size > 4 * 1024 * 1024) {
+    ElMessage.warning('本地草稿超过 4 MB，无法可靠保存。请使用“提交自验证”或“选择软件经理并提交”直接提交，文件内容不会被静默删除')
+    return
+  }
+  const existing = readWkdDraft(draftUserId(), draftWkdId(), form.status, currentVisitKey.value, form.lock_version)
+  if (existing && existing.savedAt !== lastDraftSavedAt.value) {
+    try {
+      await ElMessageBox.confirm(
+        `当前浏览器已有一份保存于 ${formatDateTime(existing.savedAt)} 的草稿（可能来自其他页面），继续保存将覆盖它。`,
+        '覆盖草稿确认', { confirmButtonText: '覆盖保存', cancelButtonText: '取消', type: 'warning' })
+    } catch { return }
+  }
+  saveWkdDraft(draftUserId(), draftWkdId(), draft)
+  lastDraftSavedAt.value = draft.savedAt
+  ElMessage.success('草稿已保存，再次进入「新建WKD」可自动恢复')
 }
 
 onMounted(async () => {
@@ -478,25 +515,26 @@ async function persist(): Promise<string | null> {
   try {
     if (creating) {
       if (demoMode.value) upsertDemoWkd()
-      else applyDetail(await api.post<Record<string, unknown>>('/wkds', {
-        ...currentPayload, note: hasRichContent(notes.NEW_WKD) ? sanitizeRichText(notes.NEW_WKD) : null,
-        attachment_ids: readyAttachmentIds, idempotency_key: creationIdempotencyKey(),
-      }))
+      else {
+        const requestBody = {
+          ...currentPayload, note: hasRichContent(notes.NEW_WKD) ? sanitizeRichText(notes.NEW_WKD) : null,
+          attachment_ids: readyAttachmentIds,
+        }
+        applyDetail(await api.post<Record<string, unknown>>('/wkds', { ...requestBody, idempotency_key: creationIdempotencyKey(requestBody) }))
+      }
       savedSnapshot = currentSnapshot
       clearLocalDraft('NEW_WKD', 'new')
       clearCreatedSessionReferences()
       await router.replace(`/wkd/${form.id}`)
       ElMessage.success(`WKD 已创建${readyAttachmentIds.length ? `，并绑定 ${readyAttachmentIds.length} 个附件` : ''}`)
     } else {
-      const draft = {
-        status: form.status, visitKey: currentVisitKey.value, lockVersion: form.lock_version,
-        form: JSON.parse(JSON.stringify(form)), note: sanitizeRichText(notes[form.status]), savedAt: new Date().toISOString(),
-      }
+      const draft = localDraftPayload()
       if (new Blob([JSON.stringify(draft)]).size > 4 * 1024 * 1024) {
         ElMessage.warning('本地草稿超过 4 MB，无法可靠保存。请使用“提交自验证”或“选择软件经理并提交”直接提交，文件内容不会被静默删除')
         return null
       }
       saveWkdDraft(draftUserId(), draftWkdId(), draft)
+      lastDraftSavedAt.value = draft.savedAt
       ElMessage.success('草稿已保存在当前浏览器，未提交后端')
     }
     return form.id
@@ -682,6 +720,7 @@ async function downloadAttachment(item: AttachmentItem) {
         <p><template v-if="!isNew"><span class="mono">{{ form.number }}</span><span>·</span></template>{{ form.project || '未选择项目' }}<template v-if="form.version"> / {{ form.version }}</template></p>
       </div>
       <div class="detail-actions">
+        <el-button v-if="isNew && canEdit" :disabled="hasPendingAttachments" @click="saveDraftOnly">保存草稿</el-button>
         <el-button v-if="canEdit" :loading="saving" :disabled="isNew && hasPendingAttachments" @click="save"><el-icon><Check /></el-icon>{{ isNew ? '保存并创建' : '保存本地草稿' }}</el-button>
         <el-button v-if="form.status==='NEW_WKD' && can('wkd.submit') && isCurrentHandler" type="primary" :loading="saving" :disabled="hasPendingAttachments" @click="transition('submit_verify')">提交自验证<el-icon><Right /></el-icon></el-button>
         <template v-if="form.status==='REVIEW' && canReviewCurrent"><el-button :loading="saving" :disabled="hasPendingAttachments" @click="transition('reject')">审核驳回</el-button><el-button type="primary" :loading="saving" :disabled="hasPendingAttachments" @click="transition('approve')"><el-icon><Check /></el-icon>审核通过</el-button></template>
