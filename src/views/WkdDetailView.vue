@@ -212,7 +212,8 @@ function contentHash(text: string) {
   return (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16)
 }
 function creationIdempotencyKey(payload: Record<string, unknown>) {
-  return `create-${draftUserId()}-${form.project_id}-${contentHash(JSON.stringify(payload))}`
+  // 键必须满足后端校验 ^[A-Za-z0-9_-]{8,64}$，只用内容哈希，不带用户/项目 ID。
+  return `create-${contentHash(JSON.stringify(payload))}`
 }
 
 async function restoreDraftUploadSession() {

@@ -34,6 +34,17 @@ class UploadInputTests(unittest.TestCase):
         result = CreateWkdInput(**BASE, attachment_ids=['a1', 'a2'], idempotency_key='request-1234')
         self.assertEqual(result.attachment_ids, ['a1', 'a2'])
 
+    def test_frontend_content_hash_idempotency_key_is_accepted(self):
+        # 与前端 creationIdempotencyKey() 的生成格式保持契约一致：create-{16进制哈希}
+        key = 'create-' + 'a1b2c3d4e5f60718'
+        result = CreateWkdInput(**BASE, idempotency_key=key)
+        self.assertEqual(result.idempotency_key, key)
+
+    def test_idempotency_key_rejects_uuid_concatenation_over_64_chars(self):
+        # 防回归：不得把用户/项目 UUID 拼进幂等键（超长且含非法结构，v1.8 曾因此无法创建 WKD）
+        with self.assertRaises(ValidationError):
+            CreateWkdInput(**BASE, idempotency_key='create-' + 'u' * 36 + '-' + 'p' * 36 + '-' + 'h' * 16)
+
     def test_create_wkd_rejects_duplicate_attachment_ids(self):
         with self.assertRaises(ValidationError):
             CreateWkdInput(**BASE, attachment_ids=['a1', 'a1'])
